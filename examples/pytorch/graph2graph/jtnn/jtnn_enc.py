@@ -116,6 +116,12 @@ class DGLJTNNEncoder(nn.Module):
             self.enc_tree_gather_update,
         )
 
+        '''
         root_vecs = mol_tree_batch.nodes[root_ids].data['h']
 
         return mol_tree_batch, root_vecs
+        '''
+
+        x_T = mol_tree_batch.ndata['h']
+
+        return mol_tree_batch, x_T

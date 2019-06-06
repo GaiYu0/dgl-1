@@ -135,14 +135,15 @@ class DGLMPN(nn.Module):
         mol_graph = self.run(mol_graph, mol_line_graph)
 
         # TODO: replace with unbatch or readout
-        g_repr = mean_nodes(mol_graph, 'h')
+        # g_repr = mean_nodes(mol_graph, 'h')
+        x_G = mol_graph.ndata['h']
 
         self.n_samples_total += n_samples
         self.n_nodes_total += n_nodes
         self.n_edges_total += n_edges
         self.n_passes += 1
 
-        return g_repr
+        return x_G
 
     def run(self, mol_graph, mol_line_graph):
         n_nodes = mol_graph.number_of_nodes()

@@ -21,10 +21,9 @@ import copy, math
 
 from dgl import batch, unbatch
 
-class DGLJTNNVAE(nn.Module):
-
+class Graph2Graph(nn.Module):
     def __init__(self, vocab, hidden_size, latent_size, depth):
-        super(DGLJTNNVAE, self).__init__()
+        super(Graph2Graph, self).__init__()
         self.vocab = vocab
         self.hidden_size = hidden_size
         self.latent_size = latent_size
@@ -60,16 +59,16 @@ class DGLJTNNVAE(nn.Module):
 
     def encode(self, mol_batch):
         mol_graphs = mol_batch['mol_graph_batch']
-        mol_vec = self.mpn(mol_graphs)
+        x_G = self.mpn(mol_graphs)
 
-        mol_tree_batch, tree_vec = self.jtnn(mol_batch['mol_trees'])
+        mol_tree_batch, x_T = self.jtnn(mol_batch['mol_trees'])
 
         self.n_nodes_total += mol_graphs.number_of_nodes()
         self.n_edges_total += mol_graphs.number_of_edges()
         self.n_tree_nodes_total += sum(t.number_of_nodes() for t in mol_batch['mol_trees'])
         self.n_passes += 1
 
-        return mol_tree_batch, tree_vec, mol_vec
+        return mol_tree_batch, x_T, x_G
 
     def sample(self, tree_vec, mol_vec, e1=None, e2=None):
         tree_mean = self.T_mean(tree_vec)
@@ -87,6 +86,7 @@ class DGLJTNNVAE(nn.Module):
 
         return tree_vec, mol_vec, z_mean, z_log_var
 
+    '''
     def forward(self, mol_batch, beta=0, e1=None, e2=None):
         self.move_to_cuda(mol_batch)
 
@@ -106,6 +106,19 @@ class DGLJTNNVAE(nn.Module):
         loss = word_loss + topo_loss + assm_loss + 2 * stereo_loss + beta * kl_loss
 
         return loss, kl_loss, word_acc, topo_acc, assm_acc, stereo_acc
+    '''
+
+    def forward(self, mol_batch, teacher_forcing=False):
+        self.move_to_cuda(mol_batch)
+
+        mol_trees = mol_batch['mol_trees']
+        batch_size = len(mol_trees)
+
+        mol_tree_batch, x_T, x_G = self.encode(mol_batch)
+        if teacher_forcing:
+            self.decoder(mol_trees, x_T)
+        else:
+            z_T, z_G, z_mean, z_log_var = self.sample()
 
     def assm(self, mol_batch, mol_tree_batch, mol_vec):
         cands = [mol_batch['cand_graph_batch'],
@@ -177,7 +190,7 @@ class DGLJTNNVAE(nn.Module):
         return all_loss, acc / len(labels)
 
     def decode(self, tree_vec, mol_vec):
-        mol_tree, nodes_dict, effective_nodes = self.decoder.decode(tree_vec)
+        mol_tree, nodes_dict, effective_nodes = self.decoder.decode(x_T)
         effective_nodes_list = effective_nodes.tolist()
         nodes_dict = [nodes_dict[v] for v in effective_nodes_list]
 
