@@ -1,4 +1,5 @@
-import torch
+import dgl
+import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 from .mol_tree import Vocab
@@ -21,301 +22,84 @@ import copy, math
 
 from dgl import batch, unbatch
 
+from .g2g_encoder import G2GEncoder
+from .g2g_decoder import TreeGRU, G2GDecoder
+
 class Graph2Graph(nn.Module):
-    def __init__(self, vocab, hidden_size, latent_size, depth):
+    def __init__(self, args):
         super(Graph2Graph, self).__init__()
-        self.vocab = vocab
-        self.hidden_size = hidden_size
-        self.latent_size = latent_size
-        self.depth = depth
+        g1_G = self.G1(args.d_ndataG, args.d_edataG, args.d_msgG)
+        g2_G = self.G2(args.d_ndataG, args.d_msgG, args.d_xG)
+        g1_T = TreeGRU(args.d_ndataT, args.d_msgT, 'msg', 'f_src', 'f_dst')
+        g2_T = self.G2(args.d_ndataT, args.d_msgT, args.d_xT)
+        embeddings = nn.Parameter(th.rand(args.vocab_size, args.d_ndataT))
+        self.encoder = G2GEncoder(embeddings, g1_G, g1_T, g2_G, g2_T,
+                                  args.d_msgG, args.d_msgT, args.n_itersG, args.n_itersT)
 
-        self.embedding = nn.Embedding(vocab.size(), hidden_size)
-        self.mpn = DGLMPN(hidden_size, depth)
-        self.jtnn = DGLJTNNEncoder(vocab, hidden_size, self.embedding)
-        self.decoder = DGLJTNNDecoder(
-                vocab, hidden_size, latent_size // 2, self.embedding)
-        self.jtmpn = DGLJTMPN(hidden_size, depth)
+        self.decoder = G2GDecoder(embeddings, args.d_ndataG, args.d_ndataT, args.d_xG, args.d_xT,
+                                  args.d_msgT, args.d_h, args.d_ud, [args.d_ul, args.vocab_size])
 
-        self.T_mean = nn.Linear(hidden_size, latent_size // 2)
-        self.T_var = nn.Linear(hidden_size, latent_size // 2)
-        self.G_mean = nn.Linear(hidden_size, latent_size // 2)
-        self.G_var = nn.Linear(hidden_size, latent_size // 2)
+        self.w1 = nn.Parameter(th.rand(args.d_xG, args.d_xG))
+        self.w2 = nn.Parameter(th.rand(args.d_zG, args.d_xG))
+        self.b1 = nn.Parameter(th.zeros(1, args.d_xG))
 
-        self.n_nodes_total = 0
-        self.n_passes = 0
-        self.n_edges_total = 0
-        self.n_tree_nodes_total = 0
+        self.w3 = nn.Parameter(th.rand(args.d_xT, args.d_xT))
+        self.w4 = nn.Parameter(th.rand(args.d_zT, args.d_xT))
+        self.b2 = nn.Parameter(th.zeros(1, args.d_xT))
 
-    @staticmethod
-    def move_to_cuda(mol_batch):
-        for t in mol_batch['mol_trees']:
-            move_dgl_to_cuda(t)
+        self.mu_G = nn.Linear(args.d_xG, args.d_zG)
+        self.logvar_G = nn.Linear(args.d_xG, args.d_zG)
+        self.mu_T = nn.Linear(args.d_xT, args.d_zT)
+        self.logvar_T = nn.Linear(args.d_xT, args.d_zT)
 
-        move_dgl_to_cuda(mol_batch['mol_graph_batch'])
-        if 'cand_graph_batch' in mol_batch:
-            move_dgl_to_cuda(mol_batch['cand_graph_batch'])
-        if mol_batch.get('stereo_cand_graph_batch') is not None:
-            move_dgl_to_cuda(mol_batch['stereo_cand_graph_batch'])
+    class G1(nn.Module):
+        def __init__(self, d_ndata, d_edata, d_msg):
+            super().__init__()
+            self.w1 = nn.Parameter(th.rand(d_ndata, d_msg))
+            self.w2 = nn.Parameter(th.rand(d_edata, d_msg))
+            self.w3 = nn.Parameter(th.rand(d_msg, d_msg))
+            self.b = nn.Parameter(th.zeros(1, d_msg))
 
-    def encode(self, mol_batch):
-        mol_graphs = mol_batch['mol_graph_batch']
-        x_G = self.mpn(mol_graphs)
+        def forward(self, f_src, f, sum_msg):
+            return F.relu(f_src @ self.w1 + f @ self.w2 + sum_msg @ self.w3 + self.b)  # Eq. (17)
 
-        mol_tree_batch, x_T = self.jtnn(mol_batch['mol_trees'])
+    class G2(nn.Module):
+        def __init__(self, d_ndata, d_msg, d_x):
+            super().__init__()
+            self.u1 = nn.Parameter(th.rand(d_ndata, d_x))
+            self.u2 = nn.Parameter(th.rand(d_msg, d_x))
+            self.b = nn.Parameter(th.zeros(1, d_x))
 
-        self.n_nodes_total += mol_graphs.number_of_nodes()
-        self.n_edges_total += mol_graphs.number_of_edges()
-        self.n_tree_nodes_total += sum(t.number_of_nodes() for t in mol_batch['mol_trees'])
-        self.n_passes += 1
+        def forward(self, f, sum_msg):
+            return F.relu(f @ self.u1 + sum_msg @ self.u2 + self.b)  # Eq. (18)
 
-        return mol_tree_batch, x_T, x_G
+    def forward(self, X_G, X_T, Y_G, Y_T):
+        batch_size = X_G.batch_size
 
-    def sample(self, tree_vec, mol_vec, e1=None, e2=None):
-        tree_mean = self.T_mean(tree_vec)
-        tree_log_var = -torch.abs(self.T_var(tree_vec))
-        mol_mean = self.G_mean(mol_vec)
-        mol_log_var = -torch.abs(self.G_var(mol_vec))
+        self.encoder(X_G, X_T)
+        self.encoder(Y_G, Y_T)
 
-        epsilon = cuda(torch.randn(*tree_mean.shape)) if e1 is None else e1
-        tree_vec = tree_mean + torch.exp(tree_log_var / 2) * epsilon
-        epsilon = cuda(torch.randn(*mol_mean.shape)) if e2 is None else e2
-        mol_vec = mol_mean + torch.exp(mol_log_var / 2) * epsilon
+        delta_T = dgl.sum_nodes(X_T, 'x') - dgl.sum_nodes(Y_T, 'x')  # Eq. (11)
+        mu_T = self.mu_T(delta_T)
+        logvar_T = self.logvar_T(delta_T)
+        z_T = logvar_T * (mu_T + th.rand_like(mu_T))  # Eq. (12)
+        z_T = th.repeat_interleave(z_T, th.tensor(X_T.batch_num_nodes), 0)
+        x_T = X_T.ndata['x']
+        x_tildeT = F.relu(x_T @ self.w1 + z_T @ self.w2 + self.b2)  # Eq. (13)
 
-        z_mean = torch.cat([tree_mean, mol_mean], 1)
-        z_log_var = torch.cat([tree_log_var, mol_log_var], 1)
+        delta_G = dgl.sum_nodes(X_G, 'x') - dgl.sum_nodes(Y_G, 'x')  # Eq. (11)
+        mu_G = self.mu_G(delta_G)
+        logvar_G = self.logvar_G(delta_G)
+        z_G = th.exp(logvar_G) * (mu_G + th.rand_like(mu_G))  # Eq. (12)
+        z_G = th.repeat_interleave(z_G, th.tensor(X_G.batch_num_nodes), 0)
+        x_G = X_G.ndata['x']
+        x_tildeG = F.relu(x_G @ self.w3 + z_G @ self.w4 + self.b2)  # Eq. (13)
 
-        return tree_vec, mol_vec, z_mean, z_log_var
+        topology_ce, label_ce = self.decoder(Y_G, Y_T, x_tildeG, x_tildeT,
+                                             th.tensor(X_G.batch_num_nodes),
+                                             th.tensor(X_T.batch_num_nodes))
 
-    '''
-    def forward(self, mol_batch, beta=0, e1=None, e2=None):
-        self.move_to_cuda(mol_batch)
+        kl_div = -0.5 * th.sum(1 + logvar_G - mu_G ** 2 - th.exp(logvar_G)) / batch_size - \
+                 0.5 * th.sum(1 + logvar_T - mu_T ** 2 - th.exp(logvar_T)) / batch_size
 
-        mol_trees = mol_batch['mol_trees']
-        batch_size = len(mol_trees)
-
-        mol_tree_batch, tree_vec, mol_vec = self.encode(mol_batch)
-
-        tree_vec, mol_vec, z_mean, z_log_var = self.sample(tree_vec, mol_vec, e1, e2)
-        kl_loss = -0.5 * torch.sum(1.0 + z_log_var - z_mean * z_mean - torch.exp(z_log_var)) / batch_size
-
-        word_loss, topo_loss, word_acc, topo_acc = self.decoder(mol_trees, tree_vec)
-        assm_loss, assm_acc = self.assm(mol_batch, mol_tree_batch, mol_vec)
-        stereo_loss, stereo_acc = self.stereo(mol_batch, mol_vec)
-
-        all_vec = torch.cat([tree_vec, mol_vec], dim=1)
-        loss = word_loss + topo_loss + assm_loss + 2 * stereo_loss + beta * kl_loss
-
-        return loss, kl_loss, word_acc, topo_acc, assm_acc, stereo_acc
-    '''
-
-    def forward(self, mol_batch, teacher_forcing=False):
-        self.move_to_cuda(mol_batch)
-
-        mol_trees = mol_batch['mol_trees']
-        batch_size = len(mol_trees)
-
-        mol_tree_batch, x_T, x_G = self.encode(mol_batch)
-        if teacher_forcing:
-            self.decoder(mol_trees, x_T)
-        else:
-            z_T, z_G, z_mean, z_log_var = self.sample()
-
-    def assm(self, mol_batch, mol_tree_batch, mol_vec):
-        cands = [mol_batch['cand_graph_batch'],
-                 mol_batch['tree_mess_src_e'],
-                 mol_batch['tree_mess_tgt_e'],
-                 mol_batch['tree_mess_tgt_n']]
-        cand_vec = self.jtmpn(cands, mol_tree_batch)
-        cand_vec = self.G_mean(cand_vec)
-
-        batch_idx = cuda(torch.LongTensor(mol_batch['cand_batch_idx']))
-        mol_vec = mol_vec[batch_idx]
-
-        mol_vec = mol_vec.view(-1, 1, self.latent_size // 2)
-        cand_vec = cand_vec.view(-1, self.latent_size // 2, 1)
-        scores = (mol_vec @ cand_vec)[:, 0, 0]
-
-        cnt, tot, acc = 0, 0, 0
-        all_loss = []
-        for i, mol_tree in enumerate(mol_batch['mol_trees']):
-            comp_nodes = [node_id for node_id, node in mol_tree.nodes_dict.items()
-                          if len(node['cands']) > 1 and not node['is_leaf']]
-            cnt += len(comp_nodes)
-            # segmented accuracy and cross entropy
-            for node_id in comp_nodes:
-                node = mol_tree.nodes_dict[node_id]
-                label = node['cands'].index(node['label'])
-                ncand = len(node['cands'])
-                cur_score = scores[tot:tot+ncand]
-                tot += ncand
-
-                if cur_score[label].item() >= cur_score.max().item():
-                    acc += 1
-
-                label = cuda(torch.LongTensor([label]))
-                all_loss.append(
-                    F.cross_entropy(cur_score.view(1, -1), label, size_average=False))
-
-        all_loss = sum(all_loss) / len(mol_batch['mol_trees'])
-        return all_loss, acc / cnt
-
-    def stereo(self, mol_batch, mol_vec):
-        stereo_cands = mol_batch['stereo_cand_graph_batch']
-        batch_idx = mol_batch['stereo_cand_batch_idx']
-        labels = mol_batch['stereo_cand_labels']
-        lengths = mol_batch['stereo_cand_lengths']
-
-        if len(labels) == 0:
-            # Only one stereoisomer exists; do nothing
-            return cuda(torch.tensor(0.)), 1.
-
-        batch_idx = cuda(torch.LongTensor(batch_idx))
-        stereo_cands = self.mpn(stereo_cands)
-        stereo_cands = self.G_mean(stereo_cands)
-        stereo_labels = mol_vec[batch_idx]
-        scores = F.cosine_similarity(stereo_cands, stereo_labels)
-
-        st, acc = 0, 0
-        all_loss = []
-        for label, le in zip(labels, lengths):
-            cur_scores = scores[st:st+le]
-            if cur_scores.data[label].item() >= cur_scores.max().item():
-                acc += 1
-            label = cuda(torch.LongTensor([label]))
-            all_loss.append(
-                F.cross_entropy(cur_scores.view(1, -1), label, size_average=False))
-            st += le
-
-        all_loss = sum(all_loss) / len(labels)
-        return all_loss, acc / len(labels)
-
-    def decode(self, tree_vec, mol_vec):
-        mol_tree, nodes_dict, effective_nodes = self.decoder.decode(x_T)
-        effective_nodes_list = effective_nodes.tolist()
-        nodes_dict = [nodes_dict[v] for v in effective_nodes_list]
-
-        for i, (node_id, node) in enumerate(zip(effective_nodes_list, nodes_dict)):
-            node['idx'] = i
-            node['nid'] = i + 1
-            node['is_leaf'] = True
-            if mol_tree.in_degree(node_id) > 1:
-                node['is_leaf'] = False
-                set_atommap(node['mol'], node['nid'])
-
-        mol_tree_sg = mol_tree.subgraph(effective_nodes)
-        mol_tree_sg.copy_from_parent()
-        mol_tree_msg, _ = self.jtnn([mol_tree_sg])
-        mol_tree_msg = unbatch(mol_tree_msg)[0]
-        mol_tree_msg.nodes_dict = nodes_dict
-
-        cur_mol = copy_edit_mol(nodes_dict[0]['mol'])
-        global_amap = [{}] + [{} for node in nodes_dict]
-        global_amap[1] = {atom.GetIdx(): atom.GetIdx() for atom in cur_mol.GetAtoms()}
-
-        cur_mol = self.dfs_assemble(mol_tree_msg, mol_vec, cur_mol, global_amap, [], 0, None)
-        if cur_mol is None:
-            return None
-
-        cur_mol = cur_mol.GetMol()
-        set_atommap(cur_mol)
-        cur_mol = Chem.MolFromSmiles(Chem.MolToSmiles(cur_mol))
-        if cur_mol is None:
-            return None
-
-        smiles2D = Chem.MolToSmiles(cur_mol)
-        stereo_cands = decode_stereo(smiles2D)
-        if len(stereo_cands) == 1:
-            return stereo_cands[0]
-        stereo_graphs = [mol2dgl_enc(c) for c in stereo_cands]
-        stereo_cand_graphs, atom_x, bond_x = \
-                zip(*stereo_graphs)
-        stereo_cand_graphs = batch(stereo_cand_graphs)
-        atom_x = cuda(torch.cat(atom_x))
-        bond_x = cuda(torch.cat(bond_x))
-        stereo_cand_graphs.ndata['x'] = atom_x
-        stereo_cand_graphs.edata['x'] = bond_x
-        stereo_cand_graphs.edata['src_x'] = atom_x.new(
-                bond_x.shape[0], atom_x.shape[1]).zero_()
-        stereo_vecs = self.mpn(stereo_cand_graphs)
-        stereo_vecs = self.G_mean(stereo_vecs)
-        scores = F.cosine_similarity(stereo_vecs, mol_vec)
-        _, max_id = scores.max(0)
-        return stereo_cands[max_id.item()]
-
-    def dfs_assemble(self, mol_tree_msg, mol_vec, cur_mol,
-                     global_amap, fa_amap, cur_node_id, fa_node_id):
-        nodes_dict = mol_tree_msg.nodes_dict
-        fa_node = nodes_dict[fa_node_id] if fa_node_id is not None else None
-        cur_node = nodes_dict[cur_node_id]
-
-        fa_nid = fa_node['nid'] if fa_node is not None else -1
-        prev_nodes = [fa_node] if fa_node is not None else []
-
-        children_node_id = [v for v in mol_tree_msg.successors(cur_node_id).tolist()
-                            if nodes_dict[v]['nid'] != fa_nid]
-        children = [nodes_dict[v] for v in children_node_id]
-        neighbors = [nei for nei in children if nei['mol'].GetNumAtoms() > 1]
-        neighbors = sorted(neighbors, key=lambda x: x['mol'].GetNumAtoms(), reverse=True)
-        singletons = [nei for nei in children if nei['mol'].GetNumAtoms() == 1]
-        neighbors = singletons + neighbors
-
-        cur_amap = [(fa_nid, a2, a1) for nid, a1, a2 in fa_amap if nid == cur_node['nid']]
-        cands = enum_assemble_nx(cur_node, neighbors, prev_nodes, cur_amap)
-        if len(cands) == 0:
-            return None
-        cand_smiles, cand_mols, cand_amap = list(zip(*cands))
-
-        cands = [(candmol, mol_tree_msg, cur_node_id) for candmol in cand_mols]
-        cand_graphs, atom_x, bond_x, tree_mess_src_edges, \
-                tree_mess_tgt_edges, tree_mess_tgt_nodes = mol2dgl_dec(
-                        cands)
-        cand_graphs = batch(cand_graphs)
-        atom_x = cuda(atom_x)
-        bond_x = cuda(bond_x)
-        cand_graphs.ndata['x'] = atom_x
-        cand_graphs.edata['x'] = bond_x
-        cand_graphs.edata['src_x'] = atom_x.new(bond_x.shape[0], atom_x.shape[1]).zero_()
-
-        cand_vecs = self.jtmpn(
-                (cand_graphs, tree_mess_src_edges, tree_mess_tgt_edges, tree_mess_tgt_nodes),
-                mol_tree_msg,
-                )
-        cand_vecs = self.G_mean(cand_vecs)
-        mol_vec = mol_vec.squeeze()
-        scores = cand_vecs @ mol_vec
-
-        _, cand_idx = torch.sort(scores, descending=True)
-
-        backup_mol = Chem.RWMol(cur_mol)
-        for i in range(len(cand_idx)):
-            cur_mol = Chem.RWMol(backup_mol)
-            pred_amap = cand_amap[cand_idx[i].item()]
-            new_global_amap = copy.deepcopy(global_amap)
-
-            for nei_id, ctr_atom, nei_atom in pred_amap:
-                if nei_id == fa_nid:
-                    continue
-                new_global_amap[nei_id][nei_atom] = new_global_amap[cur_node['nid']][ctr_atom]
-
-            cur_mol = attach_mols_nx(cur_mol, children, [], new_global_amap)
-            new_mol = cur_mol.GetMol()
-            new_mol = Chem.MolFromSmiles(Chem.MolToSmiles(new_mol))
-
-            if new_mol is None:
-                continue
-
-            result = True
-            for nei_node_id, nei_node in zip(children_node_id, children):
-                if nei_node['is_leaf']:
-                    continue
-                cur_mol = self.dfs_assemble(
-                        mol_tree_msg, mol_vec, cur_mol, new_global_amap, pred_amap,
-                        nei_node_id, cur_node_id)
-                if cur_mol is None:
-                    result = False
-                    break
-
-            if result:
-                return cur_mol
-
-        return None
+        return topology_ce, label_ce, kl_div

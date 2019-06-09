@@ -1,3 +1,4 @@
+import dgl
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -31,6 +32,22 @@ parser.add_argument("--depth", dest="depth", type=int, default=3)
 parser.add_argument("--beta", dest="beta", type=int, default=1.0)
 parser.add_argument("--lr", dest="lr", type=int, default=1e-3)
 parser.add_argument("--test", dest="test", action="store_true")
+
+#
+parser.add_argument('--d_msgG', type=int, default=16)
+parser.add_argument('--d_msgT', type=int, default=16)
+parser.add_argument('--d_ndataT', type=int, default=16)
+parser.add_argument('--d_h', type=int, default=16)
+parser.add_argument('--d_ud', type=int, default=16)
+parser.add_argument('--d_ul', type=int, default=16)
+parser.add_argument('--d_xG', type=int, default=16)
+parser.add_argument('--d_xT', type=int, default=16)
+parser.add_argument('--d_zG', type=int, default=16)
+parser.add_argument('--d_zT', type=int, default=16)
+parser.add_argument('--n_itersG', type=int, default=4)
+parser.add_argument('--n_itersT', type=int, default=4)
+#
+
 opts = parser.parse_args()
 print(opts)
 
@@ -38,6 +55,7 @@ dataset = Graph2GraphDataset(data=opts.train, vocab=opts.vocab, training=True, e
 print("loading dataset!")
 vocab = dataset.vocab
 
+# TODO(hq): remove
 batch_size = int(opts.batch_size)
 hidden_size = int(opts.hidden_size)
 latent_size = int(opts.latent_size)
@@ -45,8 +63,15 @@ depth = int(opts.depth)
 beta = float(opts.beta)
 lr = float(opts.lr)
 
-### Add Model here
-model = Graph2Graph(vocab, hidden_size, latent_size, depth)
+#
+sample = dataset[0][0]
+args = opts
+args.d_ndataG = sample['atom_x_enc'].size(1)
+args.d_edataG = sample['bond_x_enc'].size(1)
+args.vocab_size = vocab.size()
+# args.d_edataT = 0
+model = Graph2Graph(args)
+#
 
 if opts.model_path is not None:
     model.load_state_dict(torch.load(opts.model_path))
@@ -65,7 +90,23 @@ scheduler = lr_scheduler.ExponentialLR(optimizer, 0.9)
 scheduler.step()
 
 MAX_EPOCH = 100
-PRINT_ITER = 20
+PRINT_ITER = 1
+
+#
+def process(batch):
+    G = batch['mol_graph_batch']
+    G.ndata['f'] = G.ndata['x']
+    G.pop_n_repr('x')
+    # G.pop_n_repr('src_x')
+    G.edata['f'] = G.edata['x']
+    G.pop_e_repr('x')
+    for tree in batch['mol_trees']:
+        n = tree.number_of_nodes()
+        tree.ndata['id'] = torch.zeros(n, vocab.size())
+        tree.ndata['id'][torch.arange(n), tree.ndata['wid']] = 1
+    T = dgl.batch(batch['mol_trees'])
+    return G, T
+#
 
 def train():
     dataset.training = True
@@ -83,14 +124,24 @@ def train():
 
         for it, batch in enumerate(dataloader):
             model.zero_grad()
+            '''
             try:
                 loss, kl_div, wacc, tacc, sacc, dacc = model(batch, beta)
             except:
                 print([t.smiles for t in batch['mol_trees']])
                 raise
+            '''
+            #
+            X_G, X_T = process(batch[0])
+            Y_G, Y_T = process(batch[1])
+            topology_ce, label_ce, kl_div = model(X_G, X_T, Y_G, Y_T)
+            loss = topology_ce + label_ce + kl_div
+            print(loss)
+            #
             loss.backward()
             optimizer.step()
 
+            '''
             word_acc += wacc
             topo_acc += tacc
             assm_acc += sacc
@@ -106,6 +157,7 @@ def train():
                     kl_div, word_acc, topo_acc, assm_acc, steo_acc, loss.item()))
                 word_acc,topo_acc,assm_acc,steo_acc = 0,0,0,0
                 sys.stdout.flush()
+            '''
 
             if (it + 1) % 1500 == 0: #Fast annealing
                 scheduler.step()
