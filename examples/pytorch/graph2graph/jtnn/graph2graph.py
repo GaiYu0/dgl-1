@@ -82,7 +82,7 @@ class Graph2Graph(nn.Module):
         delta_T = dgl.sum_nodes(X_T, 'x') - dgl.sum_nodes(Y_T, 'x')  # Eq. (11)
         mu_T = self.mu_T(delta_T)
         logvar_T = self.logvar_T(delta_T)
-        z_T = logvar_T * (mu_T + th.rand_like(mu_T))  # Eq. (12)
+        z_T = th.exp(logvar_T) ** 0.5 * (mu_T + th.rand_like(mu_T))  # Eq. (12)
         z_T = th.repeat_interleave(z_T, th.tensor(X_T.batch_num_nodes), 0)
         x_T = X_T.ndata['x']
         x_tildeT = F.relu(x_T @ self.w1 + z_T @ self.w2 + self.b2)  # Eq. (13)
@@ -90,7 +90,7 @@ class Graph2Graph(nn.Module):
         delta_G = dgl.sum_nodes(X_G, 'x') - dgl.sum_nodes(Y_G, 'x')  # Eq. (11)
         mu_G = self.mu_G(delta_G)
         logvar_G = self.logvar_G(delta_G)
-        z_G = th.exp(logvar_G) * (mu_G + th.rand_like(mu_G))  # Eq. (12)
+        z_G = th.exp(logvar_G) ** 0.5 * (mu_G + th.rand_like(mu_G))  # Eq. (12)
         z_G = th.repeat_interleave(z_G, th.tensor(X_G.batch_num_nodes), 0)
         x_G = X_G.ndata['x']
         x_tildeG = F.relu(x_G @ self.w3 + z_G @ self.w4 + self.b2)  # Eq. (13)
