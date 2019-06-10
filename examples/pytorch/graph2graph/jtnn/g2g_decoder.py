@@ -203,8 +203,8 @@ class G2GDecoder(nn.Module):
         roots = np.cumsum([0] + T.batch_num_nodes)[:-1]
         for i, eids in enumerate(self.dfs_order(T, roots)):
             to_continue = th.from_numpy(self.to_continue(eids.numpy(), T.batch_num_edges))
-            n_filterT =
-            n_filterG =
+#           n_filterT =
+#           n_filterG =
             self.tree_gru(T_lg, eids)
 
             # topology prediction
