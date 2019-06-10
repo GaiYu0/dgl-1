@@ -136,7 +136,7 @@ def train():
             Y_G, Y_T = process(batch[1])
             topology_ce, label_ce, kl_div = model(X_G, X_T, Y_G, Y_T)
             loss = topology_ce + label_ce + kl_div
-            print(loss)
+            print(topology_ce, label_ce, kl_div, loss)
             #
             loss.backward()
             optimizer.step()

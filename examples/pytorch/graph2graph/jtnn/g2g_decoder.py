@@ -116,16 +116,12 @@ class Attention(nn.Module):
         h : (m, d_h)
         x : (n, d_x)
         """
+        print(x.shape, h.shape, self.a.shape, batch_num_nodes.shape)
         e = th.sum(x * (h @ self.a).repeat_interleave(batch_num_nodes, 0), 1, True)
         idx = th.arange(len(batch_num_nodes)).unsqueeze(1).repeat_interleave(batch_num_nodes, 0)
         att = self.segment_softmax(e, batch_num_nodes, idx)  # Eq. (25)
         z = th.zeros(len(batch_num_nodes), x.size(1)).scatter_add(0, idx.repeat(1, x.size(1)), att * x)
         return z
-
-def dfs_order(forest, roots):
-    ret = dgl.dfs_labeled_edges_generator(forest, roots, has_reverse_edge=True)
-    for eids, label in zip(*ret):
-        yield eids ^ label
 
 class G2GDecoder(nn.Module):
     def __init__(self, embeddings, d_ndataG, d_ndataT, d_xG, d_xT, d_msgT, d_h, d_ud, d_ul):
@@ -205,7 +201,10 @@ class G2GDecoder(nn.Module):
         topology_ce = 0
         label_ce = 0
         roots = np.cumsum([0] + T.batch_num_nodes)[:-1]
-        for eids in dfs_order(T, roots):
+        for i, eids in enumerate(self.dfs_order(T, roots)):
+            to_continue = th.from_numpy(self.to_continue(eids.numpy(), T.batch_num_edges))
+            n_filterT =
+            n_filterG =
             self.tree_gru(T_lg, eids)
 
             # topology prediction
@@ -234,4 +233,28 @@ class G2GDecoder(nn.Module):
             src, dst = T.edges()
             label_ce += F.cross_entropy(q, T.nodes[dst[eids]].data['wid'])
 
-            return topology_ce, label_ce
+        return topology_ce / i, label_ce / i
+
+    @staticmethod
+    def dfs_order(forest, roots):
+        ret = dgl.dfs_labeled_edges_generator(forest, roots, has_reverse_edge=True)
+        for eids, label in zip(*ret):
+            yield eids ^ label
+
+    @staticmethod
+    def to_continue(eids, batch_num_edges):
+        """
+        Parameters
+        ----------
+        eids : numpy.ndarray
+            (m,)
+        batch_num_edges : list
+
+        Returns
+        -------
+        """
+        lower = np.cumsum([0] + batch_num_edges[:-1]).reshape([1, -1])
+        upper = np.cumsum(batch_num_edges).reshape([1, -1])
+        eids = eids.reshape([-1, 1])
+        isin = (lower <= eids) & (eids < upper)
+        return np.any(isin, 0)
