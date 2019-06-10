@@ -11,7 +11,9 @@ def create_var(tensor, requires_grad=None):
 
 def cuda(tensor):
     if torch.cuda.is_available() and not os.getenv('NOCUDA', None):
-        return tensor.cuda()
+        #return tensor.cuda()
+        # disable cuda for the time being
+        return tensor
     else:
         return tensor
 

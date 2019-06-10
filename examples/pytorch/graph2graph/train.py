@@ -114,7 +114,7 @@ def train():
             dataset,
             batch_size=batch_size,
             shuffle=True,
-            num_workers=4,
+            num_workers=0,
             collate_fn=Graph2GraphCollator(vocab, True, mode="pair"),
             drop_last=True,
             worker_init_fn=worker_init_fn)
