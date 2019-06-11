@@ -46,6 +46,8 @@ parser.add_argument('--d_zG', type=int, default=16)
 parser.add_argument('--d_zT', type=int, default=16)
 parser.add_argument('--n_itersG', type=int, default=4)
 parser.add_argument('--n_itersT', type=int, default=4)
+
+parser.add_argument('--gpu', type=int, default=-1)
 #
 
 opts = parser.parse_args()
@@ -82,7 +84,8 @@ else:
         else:
             nn.init.xavier_normal(param)
 
-model = cuda(model)
+device = torch.device('cpu') if args.gpu < 0 else th.device('cuda:%d' % args.gpu)
+model = model.to(device)
 print("Model #Params: %dK" % (sum([x.nelement() for x in model.parameters()]) / 1000,))
 
 optimizer = optim.Adam(model.parameters(), lr=lr)
@@ -95,14 +98,15 @@ PRINT_ITER = 1
 #
 def process(batch):
     G = batch['mol_graph_batch']
-    G.ndata['f'] = G.ndata['x']
+    G.ndata['f'] = G.ndata['x'].to(device)
     G.pop_n_repr('x')
     # G.pop_n_repr('src_x')
-    G.edata['f'] = G.edata['x']
+    G.edata['f'] = G.edata['x'].to(device)
     G.pop_e_repr('x')
     for tree in batch['mol_trees']:
         n = tree.number_of_nodes()
-        tree.ndata['id'] = torch.zeros(n, vocab.size())
+        tree.ndata['wid'] = tree.ndata['wid'].to(device)
+        tree.ndata['id'] = torch.zeros(n, vocab.size(), device=device)
         tree.ndata['id'][torch.arange(n), tree.ndata['wid']] = 1
     T = dgl.batch(batch['mol_trees'])
     return G, T

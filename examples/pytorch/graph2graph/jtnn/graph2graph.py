@@ -2,25 +2,6 @@ import dgl
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
-from .mol_tree import Vocab
-from .nnutils import create_var, cuda, move_dgl_to_cuda
-from .chemutils import set_atommap, copy_edit_mol, enum_assemble_nx, \
-        attach_mols_nx, decode_stereo
-from .jtnn_enc import DGLJTNNEncoder
-from .jtnn_dec import DGLJTNNDecoder
-from .mpn import DGLMPN
-from .mpn import mol2dgl_single as mol2dgl_enc
-from .jtmpn import DGLJTMPN
-from .jtmpn import mol2dgl_single as mol2dgl_dec
-from .line_profiler_integration import profile
-
-import rdkit
-import rdkit.Chem as Chem
-from rdkit import DataStructs
-from rdkit.Chem import AllChem
-import copy, math
-
-from dgl import batch, unbatch
 
 from .g2g_encoder import G2GEncoder
 from .g2g_decoder import TreeGRU, G2GDecoder
@@ -74,7 +55,9 @@ class Graph2Graph(nn.Module):
             return F.relu(f @ self.u1 + sum_msg @ self.u2 + self.b)  # Eq. (18)
 
     def forward(self, X_G, X_T, Y_G, Y_T):
+        device=X_G.ndata['f'].device
         batch_size = X_G.batch_size
+        X_bnn = th.tensor(X_T.batch_num_nodes, device=device)
 
         self.encoder(X_G, X_T)
         self.encoder(Y_G, Y_T)
@@ -82,8 +65,8 @@ class Graph2Graph(nn.Module):
         delta_T = dgl.sum_nodes(X_T, 'x') - dgl.sum_nodes(Y_T, 'x')  # Eq. (11)
         mu_T = self.mu_T(delta_T)
         logvar_T = self.logvar_T(delta_T)
-        z_T = mu_T + th.exp(logvar_T) ** 0.5 * th.rand_like(mu_T)  # Eq. (12)
-        z_T = th.repeat_interleave(z_T, th.tensor(X_T.batch_num_nodes), 0)
+        z_T = mu_T + th.exp(logvar_T) ** 0.5 * th.rand_like(mu_T, device=device)  # Eq. (12)
+        z_T = th.repeat_interleave(z_T, X_bnn, 0)
         x_T = X_T.ndata['x']
         x_tildeT = F.relu(x_T @ self.w1 + z_T @ self.w2 + self.b2)  # Eq. (13)
         X_T.ndata['x'] = x_tildeT
@@ -91,8 +74,8 @@ class Graph2Graph(nn.Module):
         delta_G = dgl.sum_nodes(X_G, 'x') - dgl.sum_nodes(Y_G, 'x')  # Eq. (11)
         mu_G = self.mu_G(delta_G)
         logvar_G = self.logvar_G(delta_G)
-        z_G = mu_G + th.exp(logvar_G) ** 0.5 * th.rand_like(mu_G)  # Eq. (12)
-        z_G = th.repeat_interleave(z_G, th.tensor(X_G.batch_num_nodes), 0)
+        z_G = mu_G + th.exp(logvar_G) ** 0.5 * th.rand_like(mu_G, device=device)  # Eq. (12)
+        z_G = th.repeat_interleave(z_G, X_bnn, 0)
         x_G = X_G.ndata['x']
         x_tildeG = F.relu(x_G @ self.w3 + z_G @ self.w4 + self.b2)  # Eq. (13)
         X_G.ndata['x'] = x_tildeG

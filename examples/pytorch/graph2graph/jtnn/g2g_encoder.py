@@ -39,7 +39,8 @@ class G2GEncoder(nn.Module):
         self.n_itersT = n_itersT
 
     def forward(self, G, T):
-        # TODO G.ndata['f'], G.edata['f'], T.ndata['f'], T.edata['f']
+        device = G.ndata['f'].device
+        
         T.ndata['f'] = T.ndata['id'] @ self.embeddings
         copy_src(G, 'f', 'f_src')
         copy_dst(G, 'f', 'f_dst')
@@ -49,8 +50,8 @@ class G2GEncoder(nn.Module):
         G_lg = G.line_graph(backtracking=False, shared=True)
         T_lg = T.line_graph(backtracking=False, shared=True)
 
-        G_lg.ndata['msg'] = th.zeros(G.number_of_edges(), self.d_msgG)
-        T_lg.ndata['msg'] = th.zeros(T.number_of_edges(), self.d_msgT)
+        G_lg.ndata['msg'] = th.zeros(G.number_of_edges(), self.d_msgG, device=device)
+        T_lg.ndata['msg'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
 
         mp_message_fn = fn.copy_src(src='msg', out='msg')
         mp_reduce_fn = fn.reducer.sum(msg='msg', out='sum_msg')

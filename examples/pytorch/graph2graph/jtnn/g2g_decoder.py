@@ -102,14 +102,6 @@ class Attention(nn.Module):
         super(Attention, self).__init__()
         self.a = nn.Parameter(1e-3 * th.rand(d_h, d_x)) if a is None else a
 
-    @staticmethod
-    def segment_softmax(s, G):
-        bnn = th.tensor(G.batch_num_nodes)
-        G.ndata['exp'] = th.exp(s)
-        z = G.sum_nodes('exp').repeat_interleave(bnn, 0)
-        p = exp / z
-        return p
-
     def forward(self, h, G):
         """
         Parameters
@@ -117,12 +109,13 @@ class Attention(nn.Module):
         h : (m, d_h)
         x : (n, d_x)
         """
-        bnn = th.tensor(G.batch_num_nodes)
+        device = h.device
+        bnn = th.tensor(G.batch_num_nodes, device=device)
         G.ndata['s'] = th.sum(G.ndata['x'] * th.repeat_interleave(h @ self.a, bnn, 0), 1)
         G.ndata['exp'] = th.exp(G.ndata['s'] - th.repeat_interleave(dgl.max_nodes(G, 's'), bnn))
         z = th.repeat_interleave(dgl.sum_nodes(G, 'exp'), bnn)
-        att = th.unsqueeze(G.ndata['exp'] / z, 1)  # Eq. (25)
-        G.ndata['a_times_x'] = att * G.ndata['x']
+        a = th.unsqueeze(G.ndata['exp'] / z, 1)  # Eq. (25)
+        G.ndata['a_times_x'] = a * G.ndata['x']
         ret = dgl.sum_nodes(G, 'a_times_x')
         G.pop_n_repr('s')
         G.pop_n_repr('exp')
@@ -205,6 +198,9 @@ class G2GDecoder(nn.Module):
         topology_ce
         label_ce
         """
+        device = X_G['x'].device
+        bnn = th.tensor(Y_T.batch_num_edges, device=device)
+
         Y_T.ndata['f'] = Y_T.ndata['id'] @ self.embeddings
         T_lg = Y_T.line_graph(backtracking=False, shared=True)
         T_lg.ndata['msg'] = th.zeros(T_lg.number_of_nodes(), self.d_msgT)
@@ -213,15 +209,14 @@ class G2GDecoder(nn.Module):
         label_ce = 0
         roots = np.cumsum([0] + Y_T.batch_num_nodes)[:-1]
         for i, eids in enumerate(self.dfs_order(Y_T, roots)):
-            to_continue = th.from_numpy(self.to_continue(eids.numpy(), Y_T.batch_num_edges))
-#           n_filterT =
-#           n_filterG =
+            eids = eids.to(device)
+            to_continue = self.to_continue(eids, bnn)
             self.tree_gru(T_lg, eids)
 
             # topology prediction
             h_message_fn = fn.copy_src(src='msg', out='msg')
             h_reduce_fn = fn.reducer.sum(msg='msg', out='sum_h')
-            T_lg.ndata['sum_h'] = th.zeros(Y_T.number_of_edges(), self.d_msgT)
+            T_lg.ndata['sum_h'] = th.zeros(Y_T.number_of_edges(), self.d_msgT, device=device)
             T_lg.pull(eids, h_message_fn, h_reduce_fn)
             f_src = T_lg.nodes[eids].data['f_src']
             sum_h = T_lg.nodes[eids].data['sum_h']
@@ -243,7 +238,8 @@ class G2GDecoder(nn.Module):
             c_l = th.cat([c_lT, c_lG], 1)[to_continue]  # Eq. (8)
             z_l = th.relu(msg @ self.w_l1 + c_l @ self.w_l2 + self.b_l1)
             q = z_l @ self.u_l + self.b_l2  # Eq. (9)
-            src, dst = Y_T.edges()
+            _, dst = Y_T.edges()
+            dst = dst.to(device)
             label_ce += F.cross_entropy(q, Y_T.nodes[dst[eids]].data['wid'])
 
         return topology_ce / (i + 1), label_ce / (i + 1)
@@ -255,19 +251,19 @@ class G2GDecoder(nn.Module):
             yield eids ^ label
 
     @staticmethod
-    def to_continue(eids, batch_num_edges):
+    def to_continue(eids, bnn):
         """
         Parameters
         ----------
-        eids : numpy.ndarray
+        eids : torch.tensor
             (m,)
-        batch_num_edges : list
+        bnn : torch.tensor
 
         Returns
         -------
         """
-        lower = np.cumsum([0] + batch_num_edges[:-1]).reshape([1, -1])
-        upper = np.cumsum(batch_num_edges).reshape([1, -1])
-        eids = eids.reshape([-1, 1])
+        lower = th.unsqueeze(th.cumsum(th.cat(th.zeros(1), bnn[:-1])), 0)
+        upper = th.unsqueeze(th.cumsum(bnn), 0)
+        eids = th.unsqueeze(eids, 1)
         isin = (lower <= eids) & (eids < upper)
-        return np.any(isin, 0)
+        return th.any(isin, 0)
