@@ -168,7 +168,8 @@ class G2GDecoder(nn.Module):
         self.w_d4 = nn.Parameter(1e-3 * th.rand(d_xT + d_xG, d_ud))
         self.b_d2 = nn.Parameter(th.zeros(1, d_ud))
 
-        self.u_d = nn.Parameter(1e-3 * th.rand(d_h, 1))
+        # d_h = d_ud?
+        self.u_d = nn.Parameter(1e-3 * th.rand(d_ud, 1))
         self.b_d3 = nn.Parameter(th.zeros(1))
 
         self.w_l1 = nn.Parameter(1e-3 * th.rand(d_msgT, d_ul[0]))
