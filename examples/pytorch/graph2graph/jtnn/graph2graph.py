@@ -86,6 +86,7 @@ class Graph2Graph(nn.Module):
         z_T = th.repeat_interleave(z_T, th.tensor(X_T.batch_num_nodes), 0)
         x_T = X_T.ndata['x']
         x_tildeT = F.relu(x_T @ self.w1 + z_T @ self.w2 + self.b2)  # Eq. (13)
+        X_T.ndata['x'] = x_tildeT
 
         delta_G = dgl.sum_nodes(X_G, 'x') - dgl.sum_nodes(Y_G, 'x')  # Eq. (11)
         mu_G = self.mu_G(delta_G)
@@ -94,10 +95,9 @@ class Graph2Graph(nn.Module):
         z_G = th.repeat_interleave(z_G, th.tensor(X_G.batch_num_nodes), 0)
         x_G = X_G.ndata['x']
         x_tildeG = F.relu(x_G @ self.w3 + z_G @ self.w4 + self.b2)  # Eq. (13)
+        X_G.ndata['x'] = x_tildeG
 
-        topology_ce, label_ce = self.decoder(Y_G, Y_T, x_tildeG, x_tildeT,
-                                             th.tensor(X_G.batch_num_nodes),
-                                             th.tensor(X_T.batch_num_nodes))
+        topology_ce, label_ce = self.decoder(X_G, X_T, Y_G, Y_T)
 
         kl_div = -0.5 * th.sum(1 + logvar_G - mu_G ** 2 - th.exp(logvar_G)) / batch_size - \
                  0.5 * th.sum(1 + logvar_T - mu_T ** 2 - th.exp(logvar_T)) / batch_size
