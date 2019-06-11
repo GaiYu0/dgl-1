@@ -225,9 +225,10 @@ class G2GDecoder(nn.Module):
             f_src = T_lg.nodes[eids].data['f_src']
             sum_h = T_lg.nodes[eids].data['sum_h']
             h = F.relu(f_src @ self.w_d1 +  sum_h @ self.w_d2 + self.b_d1)  # Eq. (4)
-            c_dT = self.att_dT(h, X_T)
-            c_dG = self.att_dG(h, X_G)
-            c_d = th.cat([c_dT, c_dG], 1)  # Eq. (5) (7)
+            h_batched = h[th.cumsum(to_continue.long(), 0) - 1]
+            c_dT = self.att_dT(h_batched, X_T)
+            c_dG = self.att_dG(h_batched, X_G)
+            c_d = th.cat([c_dT, c_dG], 1)[to_continue]  # Eq. (5) (7)
             z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
             p = z_d @ self.u_d + self.b_d3  # Eq. (6)
             expand = (eids ^ 1).float()
@@ -235,9 +236,10 @@ class G2GDecoder(nn.Module):
 
             # label prediction
             msg = T_lg.nodes[eids].data['msg']
-            c_lT = self.att_lT(msg, X_T)
-            c_lG = self.att_lG(msg, X_G)
-            c_l = th.cat([c_lT, c_lG], 1)  # Eq. (8)
+            msg_batched = msg[th.cumsum(to_continue.long(), 0) - 1]
+            c_lT = self.att_lT(msg_batched, X_T)
+            c_lG = self.att_lG(msg_batched, X_G)
+            c_l = th.cat([c_lT, c_lG], 1)[to_continue]  # Eq. (8)
             z_l = th.relu(msg @ self.w_l1 + c_l @ self.w_l2 + self.b_l1)
             q = z_l @ self.u_l + self.b_l2  # Eq. (9)
             src, dst = Y_T.edges()
