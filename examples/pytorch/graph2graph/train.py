@@ -30,7 +30,7 @@ parser.add_argument("--hidden", dest="hidden_size", type=int, default=200)
 parser.add_argument("--latent", dest="latent_size", type=int, default=56)
 parser.add_argument("--depth", dest="depth", type=int, default=3)
 parser.add_argument("--beta", dest="beta", type=int, default=1.0)
-parser.add_argument("--lr", dest="lr", type=int, default=1e-3)
+parser.add_argument("--lr", dest="lr", type=int, default=1e-5)
 parser.add_argument("--test", dest="test", action="store_true")
 
 #

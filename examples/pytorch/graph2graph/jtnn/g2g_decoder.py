@@ -21,14 +21,14 @@ class TreeGRU(nn.Module):
         """
         super(TreeGRU, self).__init__()
 
-        self.wz = nn.Parameter(th.rand(d_f, d_h))
-        self.uz = nn.Parameter(th.rand(d_h, d_h))
+        self.wz = nn.Parameter(1e-3 * th.rand(d_f, d_h))
+        self.uz = nn.Parameter(1e-3 * th.rand(d_h, d_h))
         self.bz = nn.Parameter(th.zeros(1, d_h))
-        self.wr = nn.Parameter(th.rand(d_f, d_h))
-        self.ur = nn.Parameter(th.rand(d_h, d_h))
+        self.wr = nn.Parameter(1e-3 * th.rand(d_f, d_h))
+        self.ur = nn.Parameter(1e-3 * th.rand(d_h, d_h))
         self.br = nn.Parameter(th.zeros(1, d_h))
-        self.w = nn.Parameter(th.rand(d_f, d_h))
-        self.u = nn.Parameter(th.rand(d_h, d_h))
+        self.w = nn.Parameter(1e-3 * th.rand(d_f, d_h))
+        self.u = nn.Parameter(1e-3 * th.rand(d_h, d_h))
         self.b = nn.Parameter(th.zeros(1, d_h))
 
         self.h_key = h_key
@@ -100,28 +100,34 @@ class Attention(nn.Module):
         d_x : dimension of $x_i^T$ or $x_i^G$ in Eq. (25)
         """
         super(Attention, self).__init__()
-        self.a = nn.Parameter(th.rand(d_h, d_x)) if a is None else a
+        self.a = nn.Parameter(1e-3 * th.rand(d_h, d_x)) if a is None else a
 
     @staticmethod
-    def segment_softmax(x, batch_num_nodes, idx):
-        exp = th.exp(x)
-        z = th.zeros(len(batch_num_nodes), 1).scatter_add(0, idx, exp).repeat_interleave(batch_num_nodes, 0)
+    def segment_softmax(s, G):
+        bnn = th.tensor(G.batch_num_nodes)
+        G.ndata['exp'] = th.exp(s)
+        z = G.sum_nodes('exp').repeat_interleave(bnn, 0)
         p = exp / z
         return p
 
-    def forward(self, h, x, batch_num_nodes):
+    def forward(self, h, G):
         """
         Parameters
         ----------
         h : (m, d_h)
         x : (n, d_x)
         """
-        print(x.shape, h.shape, self.a.shape, batch_num_nodes.shape)
-        e = th.sum(x * (h @ self.a).repeat_interleave(batch_num_nodes, 0), 1, True)
-        idx = th.arange(len(batch_num_nodes)).unsqueeze(1).repeat_interleave(batch_num_nodes, 0)
-        att = self.segment_softmax(e, batch_num_nodes, idx)  # Eq. (25)
-        z = th.zeros(len(batch_num_nodes), x.size(1)).scatter_add(0, idx.repeat(1, x.size(1)), att * x)
-        return z
+        bnn = th.tensor(G.batch_num_nodes)
+        G.ndata['s'] = th.sum(G.ndata['x'] * th.repeat_interleave(h @ self.a, bnn, 0), 1)
+        G.ndata['exp'] = th.exp(G.ndata['s'] - th.repeat_interleave(dgl.max_nodes(G, 's'), bnn))
+        z = th.repeat_interleave(dgl.sum_nodes(G, 'exp'), bnn)
+        att = th.unsqueeze(G.ndata['exp'] / z, 1)  # Eq. (25)
+        G.ndata['a_times_x'] = att * G.ndata['x']
+        ret = dgl.sum_nodes(G, 'a_times_x')
+        G.pop_n_repr('s')
+        G.pop_n_repr('exp')
+        G.pop_n_repr('a_times_x')
+        return ret
 
 class G2GDecoder(nn.Module):
     def __init__(self, embeddings, d_ndataG, d_ndataT, d_xG, d_xT, d_msgT, d_h, d_ud, d_ul):
@@ -146,8 +152,8 @@ class G2GDecoder(nn.Module):
         self.embeddings = embeddings
         self.tree_gru = TreeGRU(d_ndataT, d_msgT, 'msg', 'f_src', 'f_dst')
 
-        self.w_d1 = nn.Parameter(th.rand(d_ndataT, d_h))
-        self.w_d2 = nn.Parameter(th.rand(d_msgT, d_h))
+        self.w_d1 = nn.Parameter(1e-3 * th.rand(d_ndataT, d_h))
+        self.w_d2 = nn.Parameter(1e-3 * th.rand(d_msgT, d_h))
         self.b_d1 = nn.Parameter(th.zeros(1, d_h))
 
         self.att_dT = Attention(d_h, d_xT)
@@ -158,15 +164,15 @@ class G2GDecoder(nn.Module):
         self.att_dT = self.att_dG = Attention(self.a_d)
         '''
 
-        self.w_d3 = nn.Parameter(th.rand(d_h, d_ud))
-        self.w_d4 = nn.Parameter(th.rand(d_xT + d_xG, d_ud))
+        self.w_d3 = nn.Parameter(1e-3 * th.rand(d_h, d_ud))
+        self.w_d4 = nn.Parameter(1e-3 * th.rand(d_xT + d_xG, d_ud))
         self.b_d2 = nn.Parameter(th.zeros(1, d_ud))
 
-        self.u_d = nn.Parameter(th.rand(d_h, 1))
+        self.u_d = nn.Parameter(1e-3 * th.rand(d_h, 1))
         self.b_d3 = nn.Parameter(th.zeros(1))
 
-        self.w_l1 = nn.Parameter(th.rand(d_msgT, d_ul[0]))
-        self.w_l2 = nn.Parameter(th.rand(d_xT + d_xG, d_ul[0]))
+        self.w_l1 = nn.Parameter(1e-3 * th.rand(d_msgT, d_ul[0]))
+        self.w_l2 = nn.Parameter(1e-3 * th.rand(d_xT + d_xG, d_ul[0]))
         self.b_l1 = nn.Parameter(th.zeros(1, d_ul[0]))
 
         self.att_lT = Attention(d_msgT, d_xT)
@@ -177,16 +183,20 @@ class G2GDecoder(nn.Module):
         self.att_lT = self.att_lG = Attention(self.a_l)
         '''
 
-        self.u_l = nn.Parameter(th.rand(*d_ul))
+        self.u_l = nn.Parameter(1e-3 * th.rand(*d_ul))
         self.b_l2 = nn.Parameter(th.zeros(1, d_ul[1]))
 
-    def forward(self, G, T, x_G, x_T, batch_num_nodesG, batch_num_nodesT):
+    def forward(self, X_G, X_T, Y_G, Y_T):
         """
         Parameters
         ----------
-        G : DGLBatchedGraph
+        X_G : DGLBatchedGraph
+            source molecules
+        X_T : DGLBatchedGraph
+            source junction trees
+        Y_G : DGLBatchedGraph
             groundtruth molecules
-        T : DGLBatchedGraph
+        Y_T : DGLBatchedGraph
             groundtruth junction trees
 
         Returns
@@ -194,15 +204,15 @@ class G2GDecoder(nn.Module):
         topology_ce
         label_ce
         """
-        T.ndata['f'] = T.ndata['id'] @ self.embeddings
-        T_lg = T.line_graph(backtracking=False, shared=True)
+        Y_T.ndata['f'] = Y_T.ndata['id'] @ self.embeddings
+        T_lg = Y_T.line_graph(backtracking=False, shared=True)
         T_lg.ndata['msg'] = th.zeros(T_lg.number_of_nodes(), self.d_msgT)
 
         topology_ce = 0
         label_ce = 0
-        roots = np.cumsum([0] + T.batch_num_nodes)[:-1]
-        for i, eids in enumerate(self.dfs_order(T, roots)):
-            to_continue = th.from_numpy(self.to_continue(eids.numpy(), T.batch_num_edges))
+        roots = np.cumsum([0] + Y_T.batch_num_nodes)[:-1]
+        for i, eids in enumerate(self.dfs_order(Y_T, roots)):
+            to_continue = th.from_numpy(self.to_continue(eids.numpy(), Y_T.batch_num_edges))
 #           n_filterT =
 #           n_filterG =
             self.tree_gru(T_lg, eids)
@@ -210,14 +220,15 @@ class G2GDecoder(nn.Module):
             # topology prediction
             h_message_fn = fn.copy_src(src='msg', out='msg')
             h_reduce_fn = fn.reducer.sum(msg='msg', out='sum_h')
-            T_lg.ndata['sum_h'] = th.zeros(T.number_of_edges(), self.d_msgT)  # TODO(gaiyu)
+            T_lg.ndata['sum_h'] = th.zeros(Y_T.number_of_edges(), self.d_msgT)
             T_lg.pull(eids, h_message_fn, h_reduce_fn)
             f_src = T_lg.nodes[eids].data['f_src']
             sum_h = T_lg.nodes[eids].data['sum_h']
             h = F.relu(f_src @ self.w_d1 +  sum_h @ self.w_d2 + self.b_d1)  # Eq. (4)
-            c_dT = self.att_dT(h, x_T, batch_num_nodesT)
-            c_dG = self.att_dG(h, x_G, batch_num_nodesG)
-            c_d = th.cat([c_dT, c_dG], 1)  # Eq. (5) (7)
+            h_batched = h[th.cumsum(to_continue.long(), 0) - 1]
+            c_dT = self.att_dT(h_batched, X_T)
+            c_dG = self.att_dG(h_batched, X_G)
+            c_d = th.cat([c_dT, c_dG], 1)[to_continue]  # Eq. (5) (7)
             z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
             p = z_d @ self.u_d + self.b_d3  # Eq. (6)
             expand = (eids ^ 1).float()
@@ -225,15 +236,16 @@ class G2GDecoder(nn.Module):
 
             # label prediction
             msg = T_lg.nodes[eids].data['msg']
-            c_lT = self.att_lT(msg, x_T, batch_num_nodesT)
-            c_lG = self.att_lG(msg, x_G, batch_num_nodesG)
-            c_l = th.cat([c_lT, c_lG], 1)  # Eq. (8)
+            msg_batched = msg[th.cumsum(to_continue.long(), 0) - 1]
+            c_lT = self.att_lT(msg_batched, X_T)
+            c_lG = self.att_lG(msg_batched, X_G)
+            c_l = th.cat([c_lT, c_lG], 1)[to_continue]  # Eq. (8)
             z_l = th.relu(msg @ self.w_l1 + c_l @ self.w_l2 + self.b_l1)
             q = z_l @ self.u_l + self.b_l2  # Eq. (9)
-            src, dst = T.edges()
-            label_ce += F.cross_entropy(q, T.nodes[dst[eids]].data['wid'])
+            src, dst = Y_T.edges()
+            label_ce += F.cross_entropy(q, Y_T.nodes[dst[eids]].data['wid'])
 
-        return topology_ce / i, label_ce / i
+        return topology_ce / (i + 1), label_ce / (i + 1)
 
     @staticmethod
     def dfs_order(forest, roots):
