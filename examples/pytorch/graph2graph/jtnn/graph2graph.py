@@ -57,7 +57,8 @@ class Graph2Graph(nn.Module):
     def forward(self, X_G, X_T, Y_G, Y_T):
         device=X_G.ndata['f'].device
         batch_size = X_G.batch_size
-        X_bnn = th.tensor(X_T.batch_num_nodes, device=device)
+        XG_bnn = th.tensor(X_G.batch_num_nodes, device=device)
+        XT_bnn = th.tensor(X_T.batch_num_nodes, device=device)
 
         self.encoder(X_G, X_T)
         self.encoder(Y_G, Y_T)
@@ -66,7 +67,7 @@ class Graph2Graph(nn.Module):
         mu_T = self.mu_T(delta_T)
         logvar_T = self.logvar_T(delta_T)
         z_T = mu_T + th.exp(logvar_T) ** 0.5 * th.rand_like(mu_T, device=device)  # Eq. (12)
-        z_T = th.repeat_interleave(z_T, X_bnn, 0)
+        z_T = th.repeat_interleave(z_T, XT_bnn, 0)
         x_T = X_T.ndata['x']
         x_tildeT = F.relu(x_T @ self.w1 + z_T @ self.w2 + self.b2)  # Eq. (13)
         X_T.ndata['x'] = x_tildeT
@@ -75,7 +76,7 @@ class Graph2Graph(nn.Module):
         mu_G = self.mu_G(delta_G)
         logvar_G = self.logvar_G(delta_G)
         z_G = mu_G + th.exp(logvar_G) ** 0.5 * th.rand_like(mu_G, device=device)  # Eq. (12)
-        z_G = th.repeat_interleave(z_G, X_bnn, 0)
+        z_G = th.repeat_interleave(z_G, XG_bnn, 0)
         x_G = X_G.ndata['x']
         x_tildeG = F.relu(x_G @ self.w3 + z_G @ self.w4 + self.b2)  # Eq. (13)
         X_G.ndata['x'] = x_tildeG

@@ -198,7 +198,7 @@ class G2GDecoder(nn.Module):
         topology_ce
         label_ce
         """
-        device = X_G['x'].device
+        device = X_G.ndata['x'].device
         bnn = th.tensor(Y_T.batch_num_edges, device=device)
 
         Y_T.ndata['f'] = Y_T.ndata['id'] @ self.embeddings
@@ -262,8 +262,8 @@ class G2GDecoder(nn.Module):
         Returns
         -------
         """
-        lower = th.unsqueeze(th.cumsum(th.cat(th.zeros(1), bnn[:-1])), 0)
-        upper = th.unsqueeze(th.cumsum(bnn), 0)
-        eids = th.unsqueeze(eids, 1)
+        lower = th.unsqueeze(th.cumsum(th.cat([th.zeros(1), bnn.float()[:-1]]), 0), 0)
+        upper = th.unsqueeze(th.cumsum(bnn.float(), 0), 0)
+        eids = th.unsqueeze(eids.float(), 1)
         isin = (lower <= eids) & (eids < upper)
         return th.any(isin, 0)
