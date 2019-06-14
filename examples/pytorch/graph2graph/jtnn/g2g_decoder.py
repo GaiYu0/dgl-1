@@ -227,7 +227,7 @@ class G2GDecoder(nn.Module):
             c_d = th.cat([c_dT, c_dG], 1)[to_continue]  # Eq. (5) (7)
             z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
             p = z_d @ self.u_d + self.b_d3  # Eq. (6)
-            expand = (eids ^ 1).float()
+            expand = (1 - eids / 2).float()
             topology_ce -=  th.mean(expand * F.logsigmoid(p) + (1 - expand) * F.logsigmoid(1 - p))
 
             # label prediction
