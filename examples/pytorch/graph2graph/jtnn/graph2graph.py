@@ -99,8 +99,6 @@ class Graph2Graph(nn.Module):
 
         topology_ce, label_ce = self.decoder(X_G, X_T, Y_G, Y_T)
 
-        assm_loss, assm_acc = self.assembler(X_G, X_T, Y_G, Y_T)
-
         kl_div = -0.5 * th.sum(1 + logvar_G - mu_G ** 2 - th.exp(logvar_G)) / batch_size - \
                  0.5 * th.sum(1 + logvar_T - mu_T ** 2 - th.exp(logvar_T)) / batch_size
 

@@ -203,7 +203,7 @@ class G2GDecoder(nn.Module):
         Y_T.ndata['f'] = Y_T.ndata['id'] @ self.embeddings
         # T_lg is constructed from the groundtruth tree Y_T
         T_lg = Y_T.line_graph(backtracking=False, shared=True)
-        T_lg.ndata['msg'] = th.zeros(T_lg.number_of_nodes(), self.d_msgT)
+        T_lg.ndata['msg'] = th.zeros(T_lg.number_of_nodes(), self.d_msgT, device=device)
 
         topology_ce = 0
         label_ce = 0
