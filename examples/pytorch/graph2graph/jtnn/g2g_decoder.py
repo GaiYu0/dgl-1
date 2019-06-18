@@ -161,9 +161,8 @@ class G2GDecoder(nn.Module):
         self.w_d4 = nn.Parameter(1e-3 * th.rand(d_xT + d_xG, d_ud))
         self.b_d2 = nn.Parameter(th.zeros(1, d_ud))
 
-        # d_h = d_ud?
-        self.u_d = nn.Parameter(1e-3 * th.rand(d_ud, 1))
-        self.b_d3 = nn.Parameter(th.zeros(1))
+        self.u_d = nn.Parameter(1e-3 * th.rand(d_ud, 2))
+        self.b_d3 = nn.Parameter(th.zeros(2))
 
         self.w_l1 = nn.Parameter(1e-3 * th.rand(d_msgT, d_ul[0]))
         self.w_l2 = nn.Parameter(1e-3 * th.rand(d_xT + d_xG, d_ul[0]))
@@ -227,8 +226,8 @@ class G2GDecoder(nn.Module):
             c_d = th.cat([c_dT, c_dG], 1)[to_continue]  # Eq. (5) (7)
             z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
             p = z_d @ self.u_d + self.b_d3  # Eq. (6)
-            expand = (1 - eids / 2).float()
-            topology_ce -=  th.mean(expand * F.logsigmoid(p) + (1 - expand) * F.logsigmoid(1 - p))
+            expand = 1 - eids % 2
+            topology_ce += F.cross_entropy(p, expand)
 
             # label prediction
             msg = T_lg.nodes[eids].data['msg']

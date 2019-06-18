@@ -30,7 +30,7 @@ parser.add_argument("--hidden", dest="hidden_size", type=int, default=200)
 parser.add_argument("--latent", dest="latent_size", type=int, default=56)
 parser.add_argument("--depth", dest="depth", type=int, default=3)
 parser.add_argument("--beta", dest="beta", type=int, default=1.0)
-parser.add_argument("--lr", dest="lr", type=int, default=1e-5)
+parser.add_argument("--lr", dest="lr", type=float, default=1e-5)
 parser.add_argument("--test", dest="test", action="store_true")
 
 #
@@ -139,8 +139,9 @@ def train():
             X_G, X_T = process(batch[0])
             Y_G, Y_T = process(batch[1])
             topology_ce, label_ce, kl_div = model(X_G, X_T, Y_G, Y_T)
-            loss = topology_ce + label_ce + kl_div
-            print(topology_ce.item(), label_ce.item(), kl_div.item(), loss.item())
+            loss = topology_ce + label_ce
+            # loss = topology_ce + label_ce + kl_div
+            print('topology %.3f | label %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), kl_div.item(), loss.item()))
             #
             loss.backward()
             optimizer.step()
@@ -163,6 +164,7 @@ def train():
                 sys.stdout.flush()
             '''
 
+        '''
             if (it + 1) % 1500 == 0: #Fast annealing
                 scheduler.step()
                 print("learning rate: %.6f" % scheduler.get_lr()[0])
@@ -172,6 +174,7 @@ def train():
         scheduler.step()
         print("learning rate: %.6f" % scheduler.get_lr()[0])
         torch.save(model.state_dict(), opts.save_path + "/model.iter-" + str(epoch))
+        '''
 
 def test():
     dataset.training = False
