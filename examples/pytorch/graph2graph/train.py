@@ -15,7 +15,7 @@ from jtnn import *
 torch.multiprocessing.set_sharing_strategy('file_system')
 
 def worker_init_fn(id_):
-    lg = rdkit.RDLogger.logger() 
+    lg = rdkit.RDLogger.logger()
     lg.setLevel(rdkit.RDLogger.CRITICAL)
 worker_init_fn(None)
 
@@ -47,7 +47,7 @@ parser.add_argument('--d_zT', type=int, default=16)
 parser.add_argument('--n_itersG', type=int, default=4)
 parser.add_argument('--n_itersT', type=int, default=4)
 
-parser.add_argument('--gpu', type=int, default=-1)
+parser.add_argument('--gpu', type=int, default=0)
 #
 
 opts = parser.parse_args()
@@ -84,7 +84,7 @@ else:
         else:
             nn.init.xavier_normal(param)
 
-device = torch.device('cpu') if args.gpu < 0 else th.device('cuda:%d' % args.gpu)
+device = torch.device('cpu') if args.gpu < 0 else torch.device('cuda:%d' % args.gpu)
 model = model.to(device)
 print("Model #Params: %dK" % (sum([x.nelement() for x in model.parameters()]) / 1000,))
 
@@ -140,7 +140,7 @@ def train():
             Y_G, Y_T = process(batch[1])
             topology_ce, label_ce, kl_div = model(X_G, X_T, Y_G, Y_T)
             loss = topology_ce + label_ce + kl_div
-            print(topology_ce, label_ce, kl_div, loss)
+            print(topology_ce.item(), label_ce.item(), kl_div.item(), loss.item())
             #
             loss.backward()
             optimizer.step()
