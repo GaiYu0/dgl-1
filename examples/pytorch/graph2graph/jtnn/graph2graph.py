@@ -81,7 +81,7 @@ class Graph2Graph(nn.Module):
 
         delta_T = dgl.sum_nodes(X_T, 'x') - dgl.sum_nodes(Y_T, 'x')  # Eq. (11)
         mu_T = self.mu_T(delta_T)
-        logvar_T = self.logvar_T(delta_T)
+        logvar_T = -th.abs(self.logvar_T(delta_T))  # Mueller et al.
         z_T = mu_T + th.exp(logvar_T) ** 0.5 * th.rand_like(mu_T, device=device)  # Eq. (12)
         z_T = th.repeat_interleave(z_T, XT_bnn, 0)
         x_T = X_T.ndata['x']
@@ -90,7 +90,7 @@ class Graph2Graph(nn.Module):
 
         delta_G = dgl.sum_nodes(X_G, 'x') - dgl.sum_nodes(Y_G, 'x')  # Eq. (11)
         mu_G = self.mu_G(delta_G)
-        logvar_G = self.logvar_G(delta_G)
+        logvar_G = -th.abs(self.logvar_G(delta_G))  # Mueller et al.
         z_G = mu_G + th.exp(logvar_G) ** 0.5 * th.rand_like(mu_G, device=device)  # Eq. (12)
         z_G = th.repeat_interleave(z_G, XG_bnn, 0)
         x_G = X_G.ndata['x']
