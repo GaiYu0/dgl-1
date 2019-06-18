@@ -53,6 +53,22 @@ class Graph2Graph(nn.Module):
 
         def forward(self, f, sum_msg):
             return F.relu(f @ self.u1 + sum_msg @ self.u2 + self.b)  # Eq. (18)
+    
+    def assembler(self, X_G, X_T, Y_G, Y_T):
+        """
+        Input:
+        Predicted Junction Tree T_\hat
+
+        Procedure:
+        1) Find all realizations of clustering attachment (need to clarify)
+        2) Apply a Graph MPN over each realization and compute the atom representations
+        3) Global sum readout of atom representations to compute each realization's overall score
+        4) compute the score function
+        5) Write up the assembling loss score function (Equation 10)
+        During training we do teacher forcing: i.e. we have the ground truth junction tree.
+        """
+        
+
 
     def forward(self, X_G, X_T, Y_G, Y_T):
         device=X_G.ndata['f'].device
@@ -82,6 +98,8 @@ class Graph2Graph(nn.Module):
         X_G.ndata['x'] = x_tildeG
 
         topology_ce, label_ce = self.decoder(X_G, X_T, Y_G, Y_T)
+
+        assm_loss, assm_acc = self.assembler(X_G, X_T, Y_G, Y_T)
 
         kl_div = -0.5 * th.sum(1 + logvar_G - mu_G ** 2 - th.exp(logvar_G)) / batch_size - \
                  0.5 * th.sum(1 + logvar_T - mu_T ** 2 - th.exp(logvar_T)) / batch_size
