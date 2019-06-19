@@ -136,9 +136,9 @@ def train():
                 raise
             '''
             #
-            X_G, X_T = process(batch[0])
-            Y_G, Y_T = process(batch[1])
-            topology_ce, label_ce, kl_div = model(X_G, X_T, Y_G, Y_T)
+            # X_G, X_T = process(batch[0])
+            # Y_G, Y_T = process(batch[1])
+            topology_ce, label_ce, kl_div = model(batch)
             loss = topology_ce + label_ce + kl_div
             # loss = topology_ce + label_ce + kl_div
             print('topology %.3f | label %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), kl_div.item(), loss.item()))

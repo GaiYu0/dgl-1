@@ -175,7 +175,8 @@ class DGLJTMPN(nn.Module):
     def forward(self, cand_batch, mol_tree_batch):
         cand_graphs, tree_mess_src_edges, tree_mess_tgt_edges, tree_mess_tgt_nodes = cand_batch
 
-        n_samples = len(cand_graphs)
+        #\TODO (hq) to return num of graphs in a batch graph, it should be cand_graphs.batch_size
+        n_samples = cand_graphs.batch_size
 
         cand_line_graph = cand_graphs.line_graph(backtracking=False, shared=True)
 
@@ -188,6 +189,7 @@ class DGLJTMPN(nn.Module):
 
         g_repr = mean_nodes(cand_graphs, 'h')
 
+        #\TODO (hq) self.n_samples_total not needed. PR to fix
         self.n_samples_total += n_samples
         self.n_nodes_total += n_nodes
         self.n_edges_total += n_edges

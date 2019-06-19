@@ -57,6 +57,7 @@ class G2GEncoder(nn.Module):
         mp_reduce_fn = fn.reducer.sum(msg='msg', out='sum_msg')
         mp_apply_fn = lambda nodes: {'msg' : self.g1_G(nodes.data['f_src'], \
                                                         nodes.data['f'], nodes.data['sum_msg'])}
+        #also part ofg1_G
         for i in range(self.n_itersG):
             G_lg.update_all(mp_message_fn, mp_reduce_fn, mp_apply_fn)
 
