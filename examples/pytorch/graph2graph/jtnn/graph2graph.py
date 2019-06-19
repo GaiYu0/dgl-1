@@ -33,6 +33,11 @@ class Graph2Graph(nn.Module):
         self.mu_T = nn.Linear(args.d_xT, args.d_zT)
         self.logvar_T = nn.Linear(args.d_xT, args.d_zT)
 
+        self.mode = "train"
+    
+    def set_mode(self, mode):
+        self.mode = mode
+
     class G1(nn.Module):
         def __init__(self, d_ndata, d_edata, d_msg):
             super().__init__()
@@ -54,7 +59,13 @@ class Graph2Graph(nn.Module):
         def forward(self, f, sum_msg):
             return F.relu(f @ self.u1 + sum_msg @ self.u2 + self.b)  # Eq. (18)
     
-    def assembler(self, X_G, X_T, Y_G, Y_T):
+    def construct_graph_candidates(self, Y_T):
+        """
+        Given a junction tree and vocabulary of each tree, construct all possible candidate graphs
+        """
+        raise NotImplementedError #\TODO
+    
+    def assemble(self, X_G, X_T, Y_G, Y_T):
         """
         Input:
         Predicted Junction Tree T_\hat
@@ -67,7 +78,20 @@ class Graph2Graph(nn.Module):
         5) Write up the assembling loss score function (Equation 10)
         During training we do teacher forcing: i.e. we have the ground truth junction tree.
         """
+
+        if self.mode == "train":
+            assert Y_T is not None, "teacher forcing error -- ground truth junction tree not provided"
+            g_candidates = self.construct_graph_candidates(Y_T)
+            candidates_scores = self.scoring_candidates(g_candidates, X_G)
+            loss = self.candidate_loss(candidates_score)
+
+            return loss
         
+        else:
+            
+            raise NotImplementedError #\TODO(hq) evaluation behavior not implemented yet
+
+
 
 
     def forward(self, X_G, X_T, Y_G, Y_T):
@@ -99,7 +123,7 @@ class Graph2Graph(nn.Module):
 
         topology_ce, label_ce = self.decoder(X_G, X_T, Y_G, Y_T)
 
-        assm_loss, assm_acc = self.assembler(X_G, X_T, Y_G, Y_T)
+        assm_loss, assm_acc = self.assemble(X_G, X_T, Y_G, Y_T)
 
         kl_div = -0.5 * th.sum(1 + logvar_G - mu_G ** 2 - th.exp(logvar_G)) / batch_size - \
                  0.5 * th.sum(1 + logvar_T - mu_T ** 2 - th.exp(logvar_T)) / batch_size
