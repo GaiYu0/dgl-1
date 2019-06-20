@@ -144,8 +144,12 @@ def train():
             # Y_G, Y_T = process(batch[1])
             topology_ce, label_ce, assm_loss, kl_div = model(batch)
             loss = topology_ce + label_ce + assm_loss + kl_div
-            # loss = topology_ce + label_ce + kl_div
             print('topology %.3f | label %.3f | assm %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), assm_loss.item(), kl_div.item(), loss.item()))
+
+            # Manually toggle on/off assm loss
+            #loss = topology_ce + label_ce + kl_div
+            #print('topology %.3f | label %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), kl_div.item(), loss.item()))
+            
             loss.backward()
             optimizer.step()
 

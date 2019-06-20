@@ -103,22 +103,10 @@ class Graph2Graph(nn.Module):
     
     def assemble(self, candidates_G, candidates_G_idx, Y_T, X_G_embedding, Y_T_msgs, X_G_bnn):
         """
-        candidates_G is a two-level batched graph of all candidates graphs
-        assuming the training batch size is B and on average each training example
-        has C candidate graphs, then candidates_G actually contain B*C small graphs
-
         # teacher forcing: given Y_T's structure and x_g, x_t perturb vectors, construct a P_G (predicted_graph)
         # and compute assembling loss with respect to Y_G
         Input:
         Predicted Junction Tree T_\hat
-
-        Procedure:
-        1) Find all realizations of clustering attachment (need to clarify)
-        2) Apply a Graph MPN over each realization and compute the atom representations
-        3) Global sum readout of atom representations to compute each realization's overall score
-        4) compute the score function
-        5) Write up the assembling loss score function (Equation 10)
-        During training we do teacher forcing: i.e. we have the ground truth junction tree.
         """
         # jtmpn is used to decode a given junction tree as well as candidates to actual graphs
         self.g2g_jtmpn(candidates_G, Y_T, Y_T_msgs)
@@ -130,8 +118,19 @@ class Graph2Graph(nn.Module):
 
         return loss, accu
 
-
-
+    def sample_from_diff(self, X, Y, mean_gen, var_gen, w1, w2, b):
+        device = X.ndata['f'].device
+        X_bnn = th.tensor(X.batch_num_nodes, device=device)
+        delta = dgl.sum_nodes(X, 'x') - dgl.sum_nodes(Y, 'x') # Eq. (11)
+        mu = mean_gen(delta)
+        logvar = -th.abs(var_gen(delta)) # Mueller et al.
+        z = mu + th.exp(logvar) ** 0.5 * th.rand_like(mu, device=device) # Eq. (12)
+        z = th.repeat_interleave(z, X_bnn, 0)
+        x = X.ndata['x']
+        x_tilde = F.relu(x @ w1 + z @ w2 + b) # Eq. (13)
+        X.ndata['x'] = x_tilde
+        
+        return mu, logvar
 
     def forward(self, batch):
         #\TODO fix self.process
@@ -145,24 +144,11 @@ class Graph2Graph(nn.Module):
         self.encoder(X_G, X_T)
         self.encoder(Y_G, Y_T)
 
-        delta_T = dgl.sum_nodes(X_T, 'x') - dgl.sum_nodes(Y_T, 'x')  # Eq. (11)
-        mu_T = self.mu_T(delta_T)
-        logvar_T = -th.abs(self.logvar_T(delta_T))  # Mueller et al.
-        z_T = mu_T + th.exp(logvar_T) ** 0.5 * th.rand_like(mu_T, device=device)  # Eq. (12)
-        z_T = th.repeat_interleave(z_T, XT_bnn, 0)
-        x_T = X_T.ndata['x']
-        x_tildeT = F.relu(x_T @ self.w1 + z_T @ self.w2 + self.b2)  # Eq. (13)
-        X_T.ndata['x'] = x_tildeT
-
         X_G_embedding = X_G.ndata['x']
-        delta_G = dgl.sum_nodes(X_G, 'x') - dgl.sum_nodes(Y_G, 'x')  # Eq. (11)
-        mu_G = self.mu_G(delta_G)
-        logvar_G = -th.abs(self.logvar_G(delta_G))  # Mueller et al.
-        z_G = mu_G + th.exp(logvar_G) ** 0.5 * th.rand_like(mu_G, device=device)  # Eq. (12)
-        z_G = th.repeat_interleave(z_G, XG_bnn, 0)
-        x_G = X_G.ndata['x']
-        x_tildeG = F.relu(x_G @ self.w3 + z_G @ self.w4 + self.b2)  # Eq. (13)
-        X_G.ndata['x'] = x_tildeG
+        mu_G, logvar_G = self.sample_from_diff(X_G, Y_G, self.mu_G, self.logvar_G,
+                                                self.w1, self.w2, self.b2)
+        mu_T, logvar_T = self.sample_from_diff(X_T, Y_T, self.mu_T, self.logvar_T,
+                                                self.w3, self.w4, self.b2)
 
         topology_ce, label_ce = self.decoder(X_G, X_T, Y_G, Y_T)
 
@@ -197,9 +183,6 @@ class Graph2Graph(nn.Module):
                 tree.ndata['num_cands'][int(n_id)] = len(tree.nodes_dict[int(n_id)]['cands'])
                 tree.ndata['label'][int(n_id)] = tree.nodes_dict[int(n_id)]['cands']\
                                                                 .index(tree.nodes_dict[int(n_id)]['label'])
-            #tree.ndata['is_leaf'] = tree.ndata['is_leaf'].to(device)
-            #tree.ndata['num_cands'] = tree.ndata['num_cands'].to(device)
-            #tree.ndata['label'] = tree.ndata['label'].to(device)
 
         T = dgl.batch(batch['mol_trees'])
 
