@@ -38,6 +38,7 @@ class Graph2Graph(nn.Module):
         g1_candidates_G = G1(args.d_ndataG_dec, args.d_edataG_dec,args.d_msgG)
         g2_candidates_G = G2(args.d_ndataG_dec, args.d_msgG, args.d_xG)
         embeddings = nn.Parameter(1e-3 * th.rand(args.vocab_size, args.d_ndataT))
+        #\TODO(hq) add option for separate embedding for Encoder/Decoder
         self.encoder = G2GEncoder(embeddings, g1_G, g1_T, g2_G, g2_T,
                                   args.d_msgG, args.d_msgT, args.n_itersG, args.n_itersT)
 
@@ -128,9 +129,9 @@ class Graph2Graph(nn.Module):
         z = th.repeat_interleave(z, X_bnn, 0)
         x = X.ndata['x']
         x_tilde = F.relu(x @ w1 + z @ w2 + b) # Eq. (13)
-        X.ndata['x'] = x_tilde
+        #X.ndata['x'] = x_tilde
         
-        return mu, logvar
+        return x_tilde, mu, logvar
 
     def forward(self, batch):
         #\TODO fix self.process
@@ -145,10 +146,13 @@ class Graph2Graph(nn.Module):
         self.encoder(Y_G, Y_T)
 
         X_G_embedding = X_G.ndata['x']
-        mu_G, logvar_G = self.sample_from_diff(X_G, Y_G, self.mu_G, self.logvar_G,
+        x_G_tilde, mu_G, logvar_G = self.sample_from_diff(X_G, Y_G, self.mu_G, self.logvar_G,
                                                 self.w1, self.w2, self.b2)
-        mu_T, logvar_T = self.sample_from_diff(X_T, Y_T, self.mu_T, self.logvar_T,
+        x_T_tilde, mu_T, logvar_T = self.sample_from_diff(X_T, Y_T, self.mu_T, self.logvar_T,
                                                 self.w3, self.w4, self.b2)
+        
+        X_G.ndata['x'] = x_G_tilde
+        X_T.ndata['x'] = x_T_tilde
 
         topology_ce, label_ce = self.decoder(X_G, X_T, Y_G, Y_T)
 
