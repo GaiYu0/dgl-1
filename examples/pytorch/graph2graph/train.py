@@ -70,9 +70,13 @@ sample = dataset[0][0]
 args = opts
 args.d_ndataG = sample['atom_x_enc'].size(1)
 args.d_edataG = sample['bond_x_enc'].size(1)
+# input molecular node feature dimension is different between encoding stage
+# and decoding stage. Decoding stage's feature does not include Chiral information
+args.d_ndataG_dec = sample['atom_x_dec'].size(1)
+args.d_edataG_dec = sample['bond_x_dec'].size(1)
 args.vocab_size = vocab.size()
 # args.d_edataT = 0
-model = Graph2Graph(args)
+model = Graph2Graph(args, vocab)
 #
 
 if opts.model_path is not None:
@@ -138,11 +142,10 @@ def train():
             #
             # X_G, X_T = process(batch[0])
             # Y_G, Y_T = process(batch[1])
-            topology_ce, label_ce, kl_div = model(batch)
-            loss = topology_ce + label_ce + kl_div
+            topology_ce, label_ce, assm_loss, kl_div = model(batch)
+            loss = topology_ce + label_ce + assm_loss + kl_div
             # loss = topology_ce + label_ce + kl_div
-            print('topology %.3f | label %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), kl_div.item(), loss.item()))
-            #
+            print('topology %.3f | label %.3f | assm %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), assm_loss.item(), kl_div.item(), loss.item()))
             loss.backward()
             optimizer.step()
 

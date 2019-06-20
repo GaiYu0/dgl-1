@@ -1,8 +1,6 @@
 import dgl.function as fn
 import torch as th
 import torch.nn as nn
-from chemutils import get_mol
-import rdkit.Chem as Chem
 
 def copy_src(G, u, uv):
     src, dst = G.edges()
@@ -52,6 +50,12 @@ class g2g_JTMPN(nn.Module):
         mp_apply_fn = lambda nodes: {'msg' : self.g1_G(nodes.data['f_src'], \
                                                         nodes.data['f'], nodes.data['sum_msg'] + nodes.data['alpha'])}
         
+        # DEBUG
+        #print("number of edges is ", candidates_G_lg.number_of_nodes())
+        #print(candidates_G_lg.ndata['f_src'].size())
+        #print(candidates_G_lg.ndata['f'].size())
+        #print(candidates_G_lg.ndata['alpha'].size())
+        #raise NotImplementedError
         for _ in range(self.n_itersG):
             candidates_G_lg.update_all(mp_message_fn, mp_reduce_fn, mp_apply_fn)
 
