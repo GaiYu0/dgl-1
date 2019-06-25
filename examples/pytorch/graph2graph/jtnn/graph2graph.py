@@ -43,7 +43,7 @@ class Graph2Graph(nn.Module):
                                   args.d_msgG, args.d_msgT, args.n_itersG, args.n_itersT)
 
         self.decoder = G2GDecoder(embeddings, args.d_ndataG, args.d_ndataT, args.d_xG, args.d_xT,
-                                  args.d_msgT, args.d_h, args.d_ud, [args.d_ul, args.vocab_size])
+                                  args.d_msgT, args.d_h, args.d_ud, [args.d_ul, args.vocab_size], vocab)
         self.g2g_jtmpn = g2g_JTMPN(g1_candidates_G, g2_candidates_G, args.d_msgG, args.d_msgT, args.n_itersG)
 
         self.w1 = nn.Parameter(1e-3 * th.rand(args.d_xG, args.d_xG))

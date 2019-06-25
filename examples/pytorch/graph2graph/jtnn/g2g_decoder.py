@@ -5,6 +5,8 @@ import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 
+MAX_DECODE_LEN = 100
+
 class TreeGRU(nn.Module):
     def __init__(self, d_f, d_h, h_key, f_src_key, f_dst_key):
         """
@@ -121,9 +123,9 @@ class Attention(nn.Module):
         G.pop_n_repr('exp')
         G.pop_n_repr('a_times_x')
         return ret
-
+        
 class G2GDecoder(nn.Module):
-    def __init__(self, embeddings, d_ndataG, d_ndataT, d_xG, d_xT, d_msgT, d_h, d_ud, d_ul):
+    def __init__(self, embeddings, d_ndataG, d_ndataT, d_xG, d_xT, d_msgT, d_h, d_ud, d_ul, vocab):
         """
         Parameters
         ----------
@@ -141,6 +143,9 @@ class G2GDecoder(nn.Module):
         super().__init__()
 
         self.d_msgT = d_msgT
+        self.d_h = d_h
+        self.vocab = vocab
+        self.d_ndataT = d_ndataT
 
         self.embeddings = embeddings
         self.tree_gru = TreeGRU(d_ndataT, d_msgT, 'msg', 'f_src', 'f_dst')
@@ -267,3 +272,135 @@ class G2GDecoder(nn.Module):
         eids = th.unsqueeze(eids.float(), 1)
         isin = (lower <= eids) & (eids < upper)
         return th.any(isin, 0)
+
+    def decode(self, x_G, x_T):
+        """
+        Parameters:
+        -----------
+        x_G: sampled or computed graph embedding
+        x_T: sampled or computed junction tree embedding
+
+        Returns
+        -------
+        """
+        # Currently, we do not support batch decoding unless DGLBatchGraph
+        # add mutable support
+
+        assert x_T.size(0) == 1, "batch decoding not supported, please unbatch first"
+
+        stack = []
+        device = x_G.device
+        gen_T_h = th.zeros(1, self.d_h).to(device=device)
+
+        # during decoding, decoder only attends to the first tree/mol node embedding
+        c_l = th.cat([x_T[0,:], x_G[0,:]], 1) # Eq. (8)
+        z_l = th.relu(gen_T_h @ self.w_l1 + c_l @ self.w_l2 + self.b_l1)
+        q = z_l @ self.u_l + self.b_l2  # Eq. (9)
+        root_score = F.softmax(q, dim=1)
+        _, root_wid = th.max(root_score, dim=1)
+        root_wid = root_wid.item()
+
+        gen_T = dgl.DGLGraph()
+        gen_T.add_nodes(1)
+        #gen_T.ndata['sum_msg'] = th.FloatTensor(gen_T.number_of_nodes(), 2*self.d_h).zero_()
+        gen_T.ndata['s_hidden'] = th.FloatTensor(gen_T.number_of_nodes(), 2*self.d_h).zero_()
+        gen_T.ndata['f'] = th.FloatTensor(gen_T.number_of_nodes(), self.d_ndataT).zero_()
+        gen_T.ndata['parent'] = th.LongTensor(gen_T.number_of_nodes(), 1).one_() * -1
+        # We need to initialize a DGLMol object instead
+        cur_smiles = self.vocab.get_smiles(root_wid)
+        gen_T.nodes[0].data['smiles'] = cur_smiles
+        gen_T.nodes[0].data['wid'] = root_wid
+        slot = self.vocab.get_slots()
+        gen_T.nodes[0].data['slot'] = slot
+
+        # \TODO Do we need this? (the node stack and all the things)
+        h = {}
+        curr_nid = 0
+        h_message_fn = fn.copy_src(src='h', out='msg')
+        h_reduce_fn = fn.reducer.sum(src='msg', out='sum_msg')
+        
+        def h_apply_fn_stop(nodes):
+            cat = th.cat([nodes.data['h'], nodes.data['sum_msg']], dim=1)
+            return {'s_hidden' : cat}
+
+        for step in range(MAX_DECODE_LEN):
+            # \TODO see how to use the embedding
+            cur_label = one_hotify(gen_T.nodes[curr_nid].data['wid'])
+            gen_T.ndata['f'] = cur_label @ self.embeddings
+            if len(gen_T.predecessors(curr_nid)) != 0:
+                gen_T.pull(curr_nid, h_message_fn, h_reduce_fn)
+
+            # Predict stop
+            gen_T.apply_nodes(h_apply_fn_stop, curr_nid)
+            #\TODO Differnt implementations in calculating
+            # stopping score -- should we follow code or should we follow paper? 
+            h_stop = gen_T.ndata[curr_nid]['s_hidden'] 
+            c_d = th.cat([x_T[0,:], x_G[0,:]], 1) # Eq. (8)
+            z_d = th.relu(h_stop @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
+            p = z_d @ self.u_d + self.b_d3  # Eq. (6)
+            stop = th.argmax(p)
+
+            #\TODO confirm that 0 means non stop
+            if stop == 0:
+                # Non stop, predict next clique
+
+                # add node y
+                gen_T.add_nodes(1)
+                gen_T.add_edges([curr_nid],[gen_T.number_of_nodes()-1])
+                gen_T_lg = gen_T.line_graph(backtracking=False, shared=True)
+                #\TODO Check whether this is the correct eid
+                eid = gen_T.number_of_edges() - 1
+                self.tree_gru(gen_T_lg, eid)
+
+                msg = gen_T_lg.nodes[eid].data['msg']
+                z_l = th.relu(msg @ self.w_l1 + c_l @ self.w_l2 + self.b_l1)
+                q = z_l @ self.u_l + self.b_l2  # Eq. (9)
+                _, sort_wid = th.sort(q, dim=1, descending=True)
+                sort_wid = sort_wid.data.squeeze()
+
+                next_wid = None
+                for wid in sort_wid[:5]:
+                    slots = self.vocab.get_slots(wid)
+                    # \TODO fix info: info needed for evaluating assemble possibility
+                    info = None
+                    if have_slots(gen_T, curr_nid, slots) and can_assemble(gen_T, curr_nid, info):
+                        next_wid = wid
+                        next_slots = slots
+                        break
+                
+                if next_wid is None:
+                    #\TODO see how to remove node
+                    gen_T.remove_nodes(-1)
+                    stop = 1
+                else:
+                    cur_smiles = self.vocab.get_smiles(next_wid)
+                    gen_T.nodes[-1].data['smiles'] = cur_smiles
+                    gen_T.nodes[0].data['wid'] = next_wid
+                    gen_T.nodes[-1].data['slot'] = next_slots
+                    curr_nid += 1
+                
+            if stop == 1:
+                # Stop
+                if gen_T.number_of_nodes() == 1:
+                    break #At root, terminate
+                 
+
+
+def can_assemble(node_x, node_y):
+    neis = node_x.neighbors + [node_y]
+    for i,nei in enumerate(neis):
+        nei.nid = i
+
+    neighbors = [nei for nei in neis if nei.mol.GetNumAtoms() > 1]
+    neighbors = sorted(neighbors, key=lambda x:x.mol.GetNumAtoms(), reverse=True)
+    singletons = [nei for nei in neis if nei.mol.GetNumAtoms() == 1]
+    neighbors = singletons + neighbors
+    cands = enum_assemble(node_x, neighbors)
+    return len(cands) > 0            
+
+
+
+
+
+
+
