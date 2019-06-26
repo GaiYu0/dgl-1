@@ -119,7 +119,20 @@ class Graph2Graph(nn.Module):
 
         return loss, accu
 
+    def decode(self, x_T, x_G):
+        gen_T = self.decoder.decode(x_T, x_G)
+        return gen_T
+    
+    def sample_with_noise(self, x_T, x_G):
+        z_T = th.rand_like(x_T, device=x_T.device)
+        z_G = th.rand_like(x_G, device=x_G.device)
+        x_G_tilde = F.relu(x_G @ self.w1 + z_G @ self.w2 + self.b1)
+        x_T_tilde = F.relu(x_T @ self.w3 + z_T @ self.w4 + self.b2)
+
+        return x_T_tilde, x_G_tilde
+
     def sample_from_diff(self, X, Y, mean_gen, var_gen, w1, w2, b):
+        # \TODO I'm actually not sure whether the shape is right for batch version.
         device = X.ndata['f'].device
         X_bnn = th.tensor(X.batch_num_nodes, device=device)
         delta = dgl.sum_nodes(X, 'x') - dgl.sum_nodes(Y, 'x') # Eq. (11)
@@ -132,7 +145,7 @@ class Graph2Graph(nn.Module):
         #X.ndata['x'] = x_tilde
         
         return x_tilde, mu, logvar
-
+    
     def forward(self, batch):
         #\TODO fix self.process
         X_G, X_T, _, _, _ = self.process(batch[0])
@@ -147,7 +160,7 @@ class Graph2Graph(nn.Module):
 
         X_G_embedding = X_G.ndata['x']
         x_G_tilde, mu_G, logvar_G = self.sample_from_diff(X_G, Y_G, self.mu_G, self.logvar_G,
-                                                self.w1, self.w2, self.b2)
+                                                self.w1, self.w2, self.b1)
         x_T_tilde, mu_T, logvar_T = self.sample_from_diff(X_T, Y_T, self.mu_T, self.logvar_T,
                                                 self.w3, self.w4, self.b2)
         
@@ -163,7 +176,7 @@ class Graph2Graph(nn.Module):
                  0.5 * th.sum(1 + logvar_T - mu_T ** 2 - th.exp(logvar_T)) / batch_size
         return topology_ce, label_ce, assm_loss, kl_div
 
-    def process(self, batch):
+    def process(self, batch, train=True):
         device = self.mu_G.weight.device
         # fetching molecular graphs
         G = batch['mol_graph_batch']
@@ -192,17 +205,19 @@ class Graph2Graph(nn.Module):
 
         # fetching molecular's related candidate graphs
 
-        candidates_G = batch['cand_graph_batch']
-        candidates_G.ndata['f'] = candidates_G.ndata['x'].to(device)
-        candidates_G.pop_n_repr('x')
-        candidates_G.edata['f'] = candidates_G.edata['x'].to(device)
-        candidates_G.pop_e_repr('x')
+        if train:
+            candidates_G = batch['cand_graph_batch']
+            candidates_G.ndata['f'] = candidates_G.ndata['x'].to(device)
+            candidates_G.pop_n_repr('x')
+            candidates_G.edata['f'] = candidates_G.edata['x'].to(device)
+            candidates_G.pop_e_repr('x')
+            candidates_G_idx = th.LongTensor(batch['cand_batch_idx']).to(device)
 
         # ground truth junction tree mapping to candidate graphs
-        gt_Y_T_msgs = [batch['tree_mess_src_e'],
-                       batch['tree_mess_tgt_e'],
-                       batch['tree_mess_tgt_n']]
+            gt_Y_T_msgs = [batch['tree_mess_src_e'],
+                           batch['tree_mess_tgt_e'],
+                           batch['tree_mess_tgt_n']]
 
-        candidates_G_idx = th.LongTensor(batch['cand_batch_idx']).to(device)
-        
-        return G, T, candidates_G, gt_Y_T_msgs, candidates_G_idx
+            return G, T, candidates_G, gt_Y_T_msgs, candidates_G_idx
+        else:
+            return G, T

@@ -4,8 +4,67 @@ import numpy as np
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
+from .mol_tree_nx import DGLMolTree
+from .datautils import one_hotify
+from .chemutils import enum_assemble_nx, get_mol
 
 MAX_DECODE_LEN = 100
+
+def copy_src(G, u, uv):
+    src, dst = G.edges()
+    G.edata[uv] = G.ndata[u][src]
+
+def copy_dst(G, v, uv):
+    src, dst = G.edges()
+    G.edata[uv] = G.ndata[v][dst]
+
+def create_node_dict(smiles, clique=[]):
+    return dict(
+            smiles=smiles,
+            mol=get_mol(smiles),
+            clique=clique,
+            )
+
+def have_slots(fa_slots, ch_slots):
+    if len(fa_slots) > 2 and len(ch_slots) > 2:
+        return True
+    matches = []
+    for i,s1 in enumerate(fa_slots):
+        a1,c1,h1 = s1
+        for j,s2 in enumerate(ch_slots):
+            a2,c2,h2 = s2
+            if a1 == a2 and c1 == c2 and (a1 != "C" or h1 + h2 >= 4):
+                matches.append( (i,j) )
+
+    if len(matches) == 0: return False
+
+    fa_match,ch_match = list(zip(*matches))
+    if len(set(fa_match)) == 1 and 1 < len(fa_slots) <= 2: #never remove atom from ring
+        fa_slots.pop(fa_match[0])
+    if len(set(ch_match)) == 1 and 1 < len(ch_slots) <= 2: #never remove atom from ring
+        ch_slots.pop(ch_match[0])
+
+    return True
+    
+def can_assemble(mol_tree, u, v_node_dict):
+    u_node_dict = mol_tree.nodes_dict[u]
+    u_neighbors = mol_tree.successors(u)
+    u_neighbors_node_dict = [
+            mol_tree.nodes_dict[_u]
+            for _u in u_neighbors
+            if _u in mol_tree.nodes_dict
+            ]
+    neis = u_neighbors_node_dict + [v_node_dict]
+    for i,nei in enumerate(neis):
+        nei['nid'] = i
+
+    neighbors = [nei for nei in neis if nei['mol'].GetNumAtoms() > 1]
+    neighbors = sorted(neighbors, key=lambda x:x['mol'].GetNumAtoms(), reverse=True)
+    singletons = [nei for nei in neis if nei['mol'].GetNumAtoms() == 1]
+    neighbors = singletons + neighbors
+    cands = enum_assemble_nx(u_node_dict, neighbors)
+    return len(cands) > 0
+
 
 class TreeGRU(nn.Module):
     def __init__(self, d_f, d_h, h_key, f_src_key, f_dst_key):
@@ -273,7 +332,111 @@ class G2GDecoder(nn.Module):
         isin = (lower <= eids) & (eids < upper)
         return th.any(isin, 0)
 
-    def decode(self, x_G, x_T):
+    def decode_label(self, T, curr_nid, context, T_lg):
+        # info needed from parent node
+        p_slot = T.nodes_dict[curr_nid]['slot']
+        device = T.ndata['f'].device
+
+        eid = T.number_of_edges() - 1
+        if len(T_lg.predecessors(eid)) == 0:
+            msg = th.zeros(1, self.d_msgT).to(device)
+        else:
+            self.tree_gru(T_lg, eid)
+            msg = T_lg.nodes[eid].data['msg']
+        c_l = context # Eq. (8)
+        z_l = th.relu(msg @ self.w_l1 + c_l @ self.w_l2 + self.b_l1)
+        q = z_l @ self.u_l + self.b_l2  # Eq. (9)
+        _, sort_wid = th.sort(q, dim=1, descending=True)
+        sort_wid = sort_wid.data.squeeze()
+
+        next_wid = None
+        for wid in sort_wid[:5]:
+            slot = self.vocab.get_slots(wid)
+            cand_node_dict = create_node_dict(self.vocab.get_smiles(wid))
+
+            if have_slots(p_slot,slot) and can_assemble(T, curr_nid, cand_node_dict):
+                next_wid = wid
+                next_slots = slot
+                break
+                
+        if next_wid is None:
+            #\TODO see how to remove node
+            end_node_idx = T.nodes()[-1]
+            end_lg_node_idx = T_lg.nodes()[-1]
+            T.remove_nodes(end_node_idx)
+            T_lg.remove_nodes(end_lg_node_idx)
+            self.stop = 1
+            print("fail to find correct label, backtrack instead")
+        else:
+            end_node_idx = T.number_of_nodes() - 1
+            cur_smiles = self.vocab.get_smiles(next_wid)
+            print("cur smiles is ", cur_smiles)
+            #print(" number of node in the gen tree is ", T.number_of_nodes())
+            T.nodes_dict[end_node_idx] = {}
+            T.nodes_dict[end_node_idx]['smiles'] = cur_smiles
+            T.nodes_dict[end_node_idx]['wid'] = next_wid
+            T.nodes_dict[end_node_idx]['slot'] = next_slots
+            T.nodes_dict[end_node_idx]['mol'] = get_mol(cur_smiles)
+            T.nodes[end_node_idx].data['parent'] = th.LongTensor([curr_nid]).unsqueeze(0).to(device)
+            curr_nid = end_node_idx
+        
+        return T, T_lg, curr_nid
+    
+    def decode_backtrack(self, T, curr_nid, T_lg):
+        parent = int(T.nodes[curr_nid].data['parent'].squeeze(0))
+        raise NotImplementedError
+        T.add_edge([curr_nid], [parent])
+        eid = T.number_of_edges() - 1
+        copy_src(T, 'f', 'f_src')
+        copy_dst(T, 'f', 'f_dst')
+        self.tree_gru(T_lg, eid)
+
+        curr_nid = T.nodes[curr_nid].data['parent']
+
+        return curr_nid
+
+
+
+
+    
+    def decode_stop(self, T, curr_nid, context, old_T_lg = None):
+        device = T.ndata['f'].device
+        cur_label = one_hotify([T.nodes_dict[curr_nid]['wid']], 
+                                pad=self.u_l.size(1))
+        cur_label = cur_label.to(device)
+        # use the embedding of current wid to initiate f.
+        f = cur_label @ self.embeddings
+        T.nodes[curr_nid].data['f'] = f
+
+        device = T.ndata['f'].device
+
+        T.add_nodes(1)
+        T.add_edges([curr_nid], [T.nodes()[-1]])
+        eid = T.number_of_edges() - 1
+        copy_src(T, 'f', 'f_src')
+        copy_dst(T, 'f', 'f_dst')
+        T_lg = T.line_graph(backtracking=False, shared=True)
+        T_lg.ndata['msg'] = th.zeros(T_lg.number_of_nodes(), self.d_msgT, device=device)
+        T_lg.ndata['sum_h'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
+        if old_T_lg is not None:
+            T_lg.ndata['msg'][:-1,:] = old_T_lg.ndata['msg']
+            T_lg.ndata['sum_h'][:-1,:] = old_T_lg.ndata['sum_h']
+        h_message_fn = fn.copy_src(src='msg', out='msg')
+        h_reduce_fn = fn.reducer.sum(msg='msg', out='sum_h')
+        T_lg.pull(eid, h_message_fn, h_reduce_fn)
+        f_src = T_lg.nodes[eid].data['f_src']
+        sum_h = T_lg.nodes[eid].data['sum_h']
+        h = F.relu(f_src @ self.w_d1 +  sum_h @ self.w_d2 + self.b_d1)  # Eq. (4)
+        c_d = context # Eq. (8), only attend to root
+        z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
+        p = z_d @ self.u_d + self.b_d3
+        
+        self.stop = th.argmax(p)
+
+        return T, T_lg
+
+    
+    def decode(self, x_T, x_G):
         """
         Parameters:
         -----------
@@ -286,47 +449,82 @@ class G2GDecoder(nn.Module):
         # Currently, we do not support batch decoding unless DGLBatchGraph
         # add mutable support
 
-        assert x_T.size(0) == 1, "batch decoding not supported, please unbatch first"
+        # x_T size: num_node x feat_dim, we assume that it's a single graph instance
+        #assert x_T.size(0) == 1, "batch decoding not supported, please unbatch first"
 
-        stack = []
         device = x_G.device
-        gen_T_h = th.zeros(1, self.d_h).to(device=device)
 
         # during decoding, decoder only attends to the first tree/mol node embedding
-        c_l = th.cat([x_T[0,:], x_G[0,:]], 1) # Eq. (8)
-        z_l = th.relu(gen_T_h @ self.w_l1 + c_l @ self.w_l2 + self.b_l1)
+        d_context = th.cat([th.unsqueeze(x_T[0,:],0), th.unsqueeze(x_G[0,:],0)], 1) # Eq. (8)
+        # init_h (message vector) is a zero vector
+        z_l = th.relu(d_context @ self.w_l2 + self.b_l1)
         q = z_l @ self.u_l + self.b_l2  # Eq. (9)
+
         root_score = F.softmax(q, dim=1)
         _, root_wid = th.max(root_score, dim=1)
         root_wid = root_wid.item()
 
-        gen_T = dgl.DGLGraph()
+        gen_T = DGLMolTree()
         gen_T.add_nodes(1)
-        #gen_T.ndata['sum_msg'] = th.FloatTensor(gen_T.number_of_nodes(), 2*self.d_h).zero_()
-        gen_T.ndata['s_hidden'] = th.FloatTensor(gen_T.number_of_nodes(), 2*self.d_h).zero_()
-        gen_T.ndata['f'] = th.FloatTensor(gen_T.number_of_nodes(), self.d_ndataT).zero_()
-        gen_T.ndata['parent'] = th.LongTensor(gen_T.number_of_nodes(), 1).one_() * -1
-        # We need to initialize a DGLMol object instead
+        gen_T.ndata['f'] = th.FloatTensor(gen_T.number_of_nodes(), self.d_ndataT).zero_().to(device)
+        gen_T.ndata['parent'] = (th.LongTensor([-1]).unsqueeze(0)).to(device)
+
+        slot = self.vocab.get_slots(root_wid)
         cur_smiles = self.vocab.get_smiles(root_wid)
-        gen_T.nodes[0].data['smiles'] = cur_smiles
-        gen_T.nodes[0].data['wid'] = root_wid
-        slot = self.vocab.get_slots()
-        gen_T.nodes[0].data['slot'] = slot
+        curr_nid = 0
+        
+        gen_T.nodes_dict[curr_nid] = {'smiles':cur_smiles, 'wid':root_wid, 'slot':slot, 'mol':get_mol(cur_smiles)}
+        for _ in range(MAX_DECODE_LEN):
+            gen_T, gen_T_lg = self.decode_stop(gen_T, curr_nid, d_context)
+            #\TODO confirm that 0 means stop
+            if self.stop == 0:
+                print("non stop, go for label")
+                gen_T, gen_T_lg, curr_nid = self.decode_label(gen_T, curr_nid, d_context, gen_T_lg)
+
+            # testing only! disable backtracking.
+            #self.stop = 0
+            if self.stop == 1:
+                print("backtrack!")
+                if curr_nid == 0:
+                    print("terminate due to early stop")
+                    return gen_T
+                curr_nid = self.decode_backtrack(gen_T, curr_nid, gen_T_lg)
+        
+        
+        return gen_T
+        
+        
+        """
+        #\TODO confirm that 0 means non stop
+        if self.stop == 0:
+            gen_T, gen_T_lg, curr_nid = self.decode_label(gen_T, curr_nid, d_context, gen_T_lg)
+            if self.stop == 1:
+                return gen_T
+            else:
+                for _ in range(MAX_DECODE_LEN - 1):
+                    self.decode_stop(gen_T, curr_nid)
+                    if self.stop == 0:
+                        curr_nid = self.decode_label(gen_T, curr_nid)
+                    if self.stop == 1:
+                        if gen_T.number_of_nodes() == 1:
+                            return gen_T
+                        curr_nid = self.decode_backtrack(gen_T, curr_nid)       
+        else:
+            # terminate at root node
+            return gen_T
+
 
         # \TODO Do we need this? (the node stack and all the things)
         h = {}
-        curr_nid = 0
         h_message_fn = fn.copy_src(src='h', out='msg')
-        h_reduce_fn = fn.reducer.sum(src='msg', out='sum_msg')
+        h_reduce_fn = fn.reducer.sum(msg='msg', out='sum_msg')
         
         def h_apply_fn_stop(nodes):
             cat = th.cat([nodes.data['h'], nodes.data['sum_msg']], dim=1)
             return {'s_hidden' : cat}
 
         for step in range(MAX_DECODE_LEN):
-            # \TODO see how to use the embedding
-            cur_label = one_hotify(gen_T.nodes[curr_nid].data['wid'])
-            gen_T.ndata['f'] = cur_label @ self.embeddings
+            
             if len(gen_T.predecessors(curr_nid)) != 0:
                 gen_T.pull(curr_nid, h_message_fn, h_reduce_fn)
 
@@ -334,10 +532,14 @@ class G2GDecoder(nn.Module):
             gen_T.apply_nodes(h_apply_fn_stop, curr_nid)
             #\TODO Differnt implementations in calculating
             # stopping score -- should we follow code or should we follow paper? 
-            h_stop = gen_T.ndata[curr_nid]['s_hidden'] 
+            h_stop = gen_T.ndata[curr_nid]['s_hidden']
+
+            # attention: only attend to the first vec 
             c_d = th.cat([x_T[0,:], x_G[0,:]], 1) # Eq. (8)
             z_d = th.relu(h_stop @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
             p = z_d @ self.u_d + self.b_d3  # Eq. (6)
+            print(p.size())
+            raise NotImplementedError
             stop = th.argmax(p)
 
             #\TODO confirm that 0 means non stop
@@ -382,21 +584,8 @@ class G2GDecoder(nn.Module):
             if stop == 1:
                 # Stop
                 if gen_T.number_of_nodes() == 1:
-                    break #At root, terminate
-                 
-
-
-def can_assemble(node_x, node_y):
-    neis = node_x.neighbors + [node_y]
-    for i,nei in enumerate(neis):
-        nei.nid = i
-
-    neighbors = [nei for nei in neis if nei.mol.GetNumAtoms() > 1]
-    neighbors = sorted(neighbors, key=lambda x:x.mol.GetNumAtoms(), reverse=True)
-    singletons = [nei for nei in neis if nei.mol.GetNumAtoms() == 1]
-    neighbors = singletons + neighbors
-    cands = enum_assemble(node_x, neighbors)
-    return len(cands) > 0            
+                    break #At root, terminate  
+        """
 
 
 

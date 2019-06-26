@@ -187,21 +187,22 @@ def test():
     dataset.training = False
     dataloader = DataLoader(
             dataset,
-            batch_size=1,
+            batch_size=2,
             shuffle=False,
             num_workers=0,
-            collate_fn=Graph2GraphCollator(vocab, False),
+            collate_fn=Graph2GraphCollator(vocab, False, mode='pair'),
             drop_last=True,
             worker_init_fn=worker_init_fn)
 
     # Just an example of molecule decoding; in reality you may want to sample
     # tree and molecule vectors.
     for it, batch in enumerate(dataloader):
-        gt_smiles = batch['mol_trees'][0].smiles
+        gt_smiles = batch[0]['mol_trees'][0].smiles
         print(gt_smiles)
-        model.move_to_cuda(batch)
-        _, tree_vec, mol_vec = model.encode(batch)
-        tree_vec, mol_vec, _, _ = model.sample(tree_vec, mol_vec)
+        X_G, X_T = model.process(batch[0], train=False)
+        model.encoder(X_G, X_T)
+        tree_vec, mol_vec = X_T.ndata['x'], X_G.ndata['x']
+        tree_vec, mol_vec = model.sample_with_noise(tree_vec, mol_vec)
         smiles = model.decode(tree_vec, mol_vec)
         print(smiles)
 

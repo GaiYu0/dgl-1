@@ -6,7 +6,7 @@ import numpy as np
 from .line_profiler_integration import profile
 
 class DGLMolTree(DGLGraph):
-    def __init__(self, smiles):
+    def __init__(self, smiles=None):
         DGLGraph.__init__(self)
         self.nodes_dict = {}
 

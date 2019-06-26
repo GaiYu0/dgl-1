@@ -26,6 +26,22 @@ def _set_node_id(mol_tree, vocab):
 
     return wid
 
+def one_hotify(labels, pad=-1):
+        '''
+        cast label to one hot vector
+        '''
+        num_instances = len(labels)
+        if pad <= 0:
+            dim_embedding = torch.max(labels) + 1 #zero-indexed assumed
+        else:
+            assert pad > 0, "result_dim for padding one hot embedding not set!"
+            dim_embedding = pad
+        embeddings = torch.zeros((num_instances, dim_embedding))
+        embeddings[torch.arange(num_instances), labels] = 1
+
+        return embeddings
+
+
 class Graph2GraphDataset(Dataset):
     def __init__(self, data, vocab, training=True, exp='drd2', mode='pair'):
         #self.dir = get_download_dir()
