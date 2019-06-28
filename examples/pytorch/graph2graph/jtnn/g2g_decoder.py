@@ -374,6 +374,7 @@ class G2GDecoder(nn.Module):
             #print(" number of node in the gen tree is ", T.number_of_nodes())
             T.nodes_dict[end_node_idx] = {}
             T.nodes_dict[end_node_idx]['smiles'] = cur_smiles
+            #T.nodes(end_node_idx).data['wid'] = next_wid
             T.nodes_dict[end_node_idx]['wid'] = next_wid
             T.nodes_dict[end_node_idx]['slot'] = next_slots
             T.nodes_dict[end_node_idx]['mol'] = get_mol(cur_smiles)
@@ -468,6 +469,7 @@ class G2GDecoder(nn.Module):
         gen_T.add_nodes(1)
         gen_T.ndata['f'] = th.FloatTensor(gen_T.number_of_nodes(), self.d_ndataT).zero_().to(device)
         gen_T.ndata['parent'] = (th.LongTensor([-1]).unsqueeze(0)).to(device)
+        #gen_T.ndata['wid'] = th.LongTensor(gen_T.number_of_nodes(), 1).zero_().to(device)
 
         slot = self.vocab.get_slots(root_wid)
         cur_smiles = self.vocab.get_smiles(root_wid)
@@ -482,110 +484,27 @@ class G2GDecoder(nn.Module):
                 gen_T, gen_T_lg, curr_nid = self.decode_label(gen_T, curr_nid, d_context, gen_T_lg)
 
             # testing only! disable backtracking.
-            #self.stop = 0
+            if self.stop == 1:
+                end_node_idx = gen_T.nodes()[-1]
+                gen_T.remove_nodes(end_node_idx)
+            self.stop = 0
+
+            # test finish
             if self.stop == 1:
                 print("backtrack!")
                 if curr_nid == 0:
                     print("terminate due to early stop")
+                    end_node_idx = gen_T.nodes()[-1]
+                    gen_T.remove_nodes(end_node_idx)
                     return gen_T
                 curr_nid = self.decode_backtrack(gen_T, curr_nid, gen_T_lg)
         
-        
+        n = gen_T.number_of_nodes()
+        gen_T.ndata['id'] = th.zeros(n, self.vocab.size(), device=device)
+        for id in range(n):
+            gen_T.ndata['id'][id, gen_T.nodes_dict[id]['wid']] = 1
+        #gen_T.ndata['id'][th.arange(n), gen_T.ndata['wid']] = 1
         return gen_T
-        
-        
-        """
-        #\TODO confirm that 0 means non stop
-        if self.stop == 0:
-            gen_T, gen_T_lg, curr_nid = self.decode_label(gen_T, curr_nid, d_context, gen_T_lg)
-            if self.stop == 1:
-                return gen_T
-            else:
-                for _ in range(MAX_DECODE_LEN - 1):
-                    self.decode_stop(gen_T, curr_nid)
-                    if self.stop == 0:
-                        curr_nid = self.decode_label(gen_T, curr_nid)
-                    if self.stop == 1:
-                        if gen_T.number_of_nodes() == 1:
-                            return gen_T
-                        curr_nid = self.decode_backtrack(gen_T, curr_nid)       
-        else:
-            # terminate at root node
-            return gen_T
-
-
-        # \TODO Do we need this? (the node stack and all the things)
-        h = {}
-        h_message_fn = fn.copy_src(src='h', out='msg')
-        h_reduce_fn = fn.reducer.sum(msg='msg', out='sum_msg')
-        
-        def h_apply_fn_stop(nodes):
-            cat = th.cat([nodes.data['h'], nodes.data['sum_msg']], dim=1)
-            return {'s_hidden' : cat}
-
-        for step in range(MAX_DECODE_LEN):
-            
-            if len(gen_T.predecessors(curr_nid)) != 0:
-                gen_T.pull(curr_nid, h_message_fn, h_reduce_fn)
-
-            # Predict stop
-            gen_T.apply_nodes(h_apply_fn_stop, curr_nid)
-            #\TODO Differnt implementations in calculating
-            # stopping score -- should we follow code or should we follow paper? 
-            h_stop = gen_T.ndata[curr_nid]['s_hidden']
-
-            # attention: only attend to the first vec 
-            c_d = th.cat([x_T[0,:], x_G[0,:]], 1) # Eq. (8)
-            z_d = th.relu(h_stop @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
-            p = z_d @ self.u_d + self.b_d3  # Eq. (6)
-            print(p.size())
-            raise NotImplementedError
-            stop = th.argmax(p)
-
-            #\TODO confirm that 0 means non stop
-            if stop == 0:
-                # Non stop, predict next clique
-
-                # add node y
-                gen_T.add_nodes(1)
-                gen_T.add_edges([curr_nid],[gen_T.number_of_nodes()-1])
-                gen_T_lg = gen_T.line_graph(backtracking=False, shared=True)
-                #\TODO Check whether this is the correct eid
-                eid = gen_T.number_of_edges() - 1
-                self.tree_gru(gen_T_lg, eid)
-
-                msg = gen_T_lg.nodes[eid].data['msg']
-                z_l = th.relu(msg @ self.w_l1 + c_l @ self.w_l2 + self.b_l1)
-                q = z_l @ self.u_l + self.b_l2  # Eq. (9)
-                _, sort_wid = th.sort(q, dim=1, descending=True)
-                sort_wid = sort_wid.data.squeeze()
-
-                next_wid = None
-                for wid in sort_wid[:5]:
-                    slots = self.vocab.get_slots(wid)
-                    # \TODO fix info: info needed for evaluating assemble possibility
-                    info = None
-                    if have_slots(gen_T, curr_nid, slots) and can_assemble(gen_T, curr_nid, info):
-                        next_wid = wid
-                        next_slots = slots
-                        break
-                
-                if next_wid is None:
-                    #\TODO see how to remove node
-                    gen_T.remove_nodes(-1)
-                    stop = 1
-                else:
-                    cur_smiles = self.vocab.get_smiles(next_wid)
-                    gen_T.nodes[-1].data['smiles'] = cur_smiles
-                    gen_T.nodes[0].data['wid'] = next_wid
-                    gen_T.nodes[-1].data['slot'] = next_slots
-                    curr_nid += 1
-                
-            if stop == 1:
-                # Stop
-                if gen_T.number_of_nodes() == 1:
-                    break #At root, terminate  
-        """
 
 
 

@@ -38,35 +38,42 @@ class G2GEncoder(nn.Module):
         self.n_itersG = n_itersG
         self.n_itersT = n_itersT
 
-    def forward(self, G, T):
-        device = G.ndata['f'].device
+    def forward(self, G=None, T=None):
         
-        T.ndata['f'] = T.ndata['id'] @ self.embeddings
-        copy_src(G, 'f', 'f_src')
-        copy_dst(G, 'f', 'f_dst')
-        copy_src(T, 'f', 'f_src')
-        copy_dst(T, 'f', 'f_dst')
-
-        G_lg = G.line_graph(backtracking=False, shared=True)
-        T_lg = T.line_graph(backtracking=False, shared=True)
-
-        G_lg.ndata['msg'] = th.zeros(G.number_of_edges(), self.d_msgG, device=device)
-        T_lg.ndata['msg'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
-
-        mp_message_fn = fn.copy_src(src='msg', out='msg')
-        mp_reduce_fn = fn.reducer.sum(msg='msg', out='sum_msg')
-        mp_apply_fn = lambda nodes: {'msg' : self.g1_G(nodes.data['f_src'], \
-                                                        nodes.data['f'], nodes.data['sum_msg'])}
-        #also part ofg1_G
-        for i in range(self.n_itersG):
-            G_lg.update_all(mp_message_fn, mp_reduce_fn, mp_apply_fn)
-
-        for i in range(self.n_itersT):
-            self.g1_T(T_lg)
-
         readout_message_fn = fn.copy_edge(edge='msg', out='msg')
         readout_reduce_fn = fn.reducer.sum(msg='msg', out='sum_msg')
-        readout_apply_fn = lambda nodes: {'x' : self.g2_G(nodes.data['f'], nodes.data['sum_msg'])}
-        G.update_all(readout_message_fn, readout_reduce_fn, readout_apply_fn)
-        readout_apply_fn = lambda nodes: {'x' : self.g2_T(nodes.data['f'], nodes.data['sum_msg'])}
-        T.update_all(readout_message_fn, readout_reduce_fn, readout_apply_fn)
+        if G:
+            device = G.ndata['f'].device
+            copy_src(G, 'f', 'f_src')
+            copy_dst(G, 'f', 'f_dst')
+
+            G_lg = G.line_graph(backtracking=False, shared=True)
+            G_lg.ndata['msg'] = th.zeros(G.number_of_edges(), self.d_msgG, device=device)
+            mp_message_fn = fn.copy_src(src='msg', out='msg')
+            mp_reduce_fn = fn.reducer.sum(msg='msg', out='sum_msg')
+            mp_apply_fn = lambda nodes: {'msg' : self.g1_G(nodes.data['f_src'], \
+                                                            nodes.data['f'], nodes.data['sum_msg'])}
+            #also part ofg1_G
+            for i in range(self.n_itersG):
+                G_lg.update_all(mp_message_fn, mp_reduce_fn, mp_apply_fn)
+            
+            readout_apply_fn = lambda nodes: {'x' : self.g2_G(nodes.data['f'], nodes.data['sum_msg'])}
+            G.update_all(readout_message_fn, readout_reduce_fn, readout_apply_fn)
+        
+        if T:
+            T.ndata['f'] = T.ndata['id'] @ self.embeddings
+            device = T.ndata['f'].device
+            copy_src(T, 'f', 'f_src')
+            copy_dst(T, 'f', 'f_dst')
+
+            T_lg = T.line_graph(backtracking=False, shared=True)
+            T_lg.ndata['msg'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
+        
+            for i in range(self.n_itersT):
+                self.g1_T(T_lg)
+
+        
+            readout_apply_fn = lambda nodes: {'x' : self.g2_T(nodes.data['f'], nodes.data['sum_msg'])}
+            T.update_all(readout_message_fn, readout_reduce_fn, readout_apply_fn)
+        
+        return G, T
