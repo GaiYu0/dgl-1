@@ -1,11 +1,18 @@
+import copy, math
 import dgl
 import torch as th
 import torch.nn as nn
 import torch.nn.functional as F
 
+import rdkit
+import rdkit.Chem as Chem
+
+from .chemutils import set_atommap, copy_edit_mol, enum_assemble_nx, \
+     attach_mols_nx, decode_stereo
 from .g2g_encoder import G2GEncoder
 from .g2g_decoder import TreeGRU, G2GDecoder
 from .g2g_jtmpn import g2g_JTMPN
+from .g2g_jtmpn import mol2dgl_single as mol2dgl_dec
 
 class G1(nn.Module):
     def __init__(self, d_ndata, d_edata, d_msg):
@@ -58,6 +65,8 @@ class Graph2Graph(nn.Module):
         self.logvar_G = nn.Linear(args.d_xG, args.d_zG)
         self.mu_T = nn.Linear(args.d_xT, args.d_zT)
         self.logvar_T = nn.Linear(args.d_xT, args.d_zT)
+
+        self.A_assm = nn.Linear(args.d_xG, args.d_xG, bias=False)
 
         self.mode = "train"
         self.vocab = vocab
@@ -116,12 +125,141 @@ class Graph2Graph(nn.Module):
                                                    X_G_embedding, X_G_bnn)
         loss, accu = self.candidates_loss(candidates_score, Y_T)
 
-
         return loss, accu
 
     def decode(self, x_T, x_G):
         gen_T = self.decoder.decode(x_T, x_G)
+        print(gen_T)
+        if gen_T.number_of_nodes() == 1: return gen_T.nodes_dict[0]['smiles']
+        # set atom map, change to 1-indexed for this sake
+        leaf_count = 0
+        for id in gen_T.nodes():
+            print(gen_T.nodes_dict)
+            id = int(id)
+            gen_T.nodes_dict[id].update({'idx' : id})
+            gen_T.nodes_dict[id].update({"nid": id + 1})
+            #\TODO double check author's definition of neighbors
+            if len(gen_T.predecessors(id).tolist()) == 1:
+                gen_T.nodes_dict[id].update({'is_leaf' : True})
+                leaf_count += 1
+            else:
+                gen_T.nodes_dict[id].update({'is_leaf' : False})
+                set_atommap(gen_T.nodes_dict[id]['mol'], gen_T.nodes_dict[id]['nid'])
+        self.encoder(None, gen_T)
+
+        # \TODO understand what's going on here. Don't copy line 108 - 110 blindly
+        x_G_readout = th.sum(x_G, dim=0).unsqueeze(0) # another option: average pooling
+        x_G_readout = self.A_assm(x_G_readout) # bilinear transform
+
+        cur_mol = copy_edit_mol(gen_T.nodes_dict[0]['mol'])
+        # amap: atom map
+        global_amap = [{}] + [{} for node in gen_T.nodes_dict]
+        global_amap[1] = {atom.GetIdx() : atom.GetIdx() for atom in cur_mol.GetAtoms()}
+
+        cur_mol = self.dfs_assemble(gen_T, x_G_readout, cur_mol, global_amap, [], 0, -1)
+        
+        if cur_mol is None:
+            return None
+        
+        cur_mol = cur_mol.GetMol()
+        set_atommap(cur_mol)
+        cur_mol = Chem.MolFromSmiles(Chem.MolToSmiles(cur_mol))
+
+        return Chem.MolToSmiles(cur_mol) if cur_mol is not None else None
+
+        # Debug only
         return gen_T
+    
+    def dfs_assemble(self, gen_T, x_readout, cur_mol, global_amap, p_amap, cur_node_id, p_node_id):
+        # p_amap: parent atom map
+        # p_node: parent node
+        device = gen_T.ndata['x'].device
+
+        
+        p_node_dict = gen_T.nodes_dict[p_node_id] if p_node_id != -1 else None
+        fa_nid = p_node_dict['nid'] if p_node_dict is not None else -1
+        cur_node_dict = gen_T.nodes_dict[cur_node_id]
+
+        #p_node_nid = p_node_id + 1
+        prev_nodes_dict = [p_node_dict] if p_node_dict is not None else []
+
+        child_id = [v for v in gen_T.successors(cur_node_id).tolist() if gen_T.nodes_dict[v]['nid'] != fa_nid]
+
+        child_dict = [gen_T.nodes_dict[id] for id in child_id]
+        neighbors = [nei_id for nei_id in child_id if gen_T.nodes_dict[nei_id]['mol'].GetNumAtoms() > 1]
+        neighbors = sorted(neighbors, key=lambda x: gen_T.nodes_dict[x]['mol'].GetNumAtoms(), reverse=True)
+        singletons = [nei_id for nei_id in child_id if gen_T.nodes_dict[nei_id]['mol'].GetNumAtoms() == 1]
+        neighbors = singletons + neighbors
+        neighbors_dict = [gen_T.nodes_dict[id] for id in neighbors]
+
+        # nid is only saved to amap
+        cur_amap = [(fa_nid, a2, a1) for nid, a1, a2 in p_amap if nid == gen_T.nodes_dict[cur_node_id]['nid']]
+        cands = enum_assemble_nx(cur_node_dict, neighbors_dict, prev_nodes_dict, cur_amap)
+
+        if len(cands) == 0:
+            return None
+        cand_smiles, cand_mols, cand_amap = list(zip(*cands))
+        #\TODO this is not used
+        mol_tree_msg = gen_T.ndata['x']
+        cands = [(candmol, gen_T, cur_node_id) for candmol in cand_mols]
+        cand_graphs, atom_x, bond_x, tree_mess_src_edges, \
+            tree_mess_tgt_edges, tree_mess_tgt_nodes = mol2dgl_dec(cands)
+        
+        gen_T_msgs = [tree_mess_src_edges, tree_mess_tgt_edges, tree_mess_tgt_nodes]
+        cand_graphs = dgl.batch(cand_graphs)
+        cand_graphs.ndata['f'] = atom_x.to(device)
+        cand_graphs.edata['f'] = bond_x.to(device)
+
+        
+        
+        # \TODO I think we don't need the line below
+        # cand_graphs.edata['src_f'] = atom_x.new(bond_x.shape[0], atom_x.shape[1]).zero_()
+        self.g2g_jtmpn(cand_graphs, gen_T, gen_T_msgs)
+        
+
+        cand_graphs_readout = dgl.sum_nodes(cand_graphs, 'x')
+        print(cand_graphs_readout.size())
+        scores = cand_graphs_readout @ x_readout.t()
+        print(scores.size())
+
+        _, cand_idx = th.sort(scores, descending=True)
+
+        #cand_idx = cand_idx.squeeze(1).tolist()
+
+        backup_mol = Chem.RWMol(cur_mol)
+        for i in range(min(cand_idx.numel(), 5)):
+            cur_mol = Chem.RWMol(backup_mol)
+            pred_amap = cand_amap[cand_idx[i].item()]
+            print(pred_amap)
+            new_global_amap = copy.deepcopy(global_amap)
+
+            for nei_id, ctr_atom, nei_atom in pred_amap:
+                if nei_id == fa_nid:
+                    continue
+                new_global_amap[nei_id][nei_atom] = new_global_amap[cur_node_id+1][ctr_atom]
+            
+            cur_mol = attach_mols_nx(cur_mol, child_dict, [], new_global_amap)
+            new_mol = cur_mol.GetMol()
+            new_mol = Chem.MolFromSmiles(Chem.MolToSmiles(new_mol))
+
+            if new_mol is None:
+                continue
+            
+            result = True
+            for nei_node_id, nei_node in zip(child_id, child_dict):
+                if nei_node['is_leaf']:
+                    continue
+                cur_mol = self.dfs_assemble(
+                    gen_T, x_readout, cur_mol, new_global_amap, pred_amap, nei_node_id, cur_node_id
+                )
+                if cur_mol is None:
+                    result = False
+                    break
+            
+            if result:
+                return cur_mol
+        
+        return None
     
     def sample_with_noise(self, x_T, x_G):
         z_T = th.rand_like(x_T, device=x_T.device)
@@ -167,14 +305,14 @@ class Graph2Graph(nn.Module):
         X_G.ndata['x'] = x_G_tilde
         X_T.ndata['x'] = x_T_tilde
 
-        topology_ce, label_ce = self.decoder(X_G, X_T, Y_G, Y_T)
+        topology_ce, label_ce, topo_acc, label_acc = self.decoder(X_G, X_T, Y_G, Y_T)
 
         # 0 start
         X_G_bnn = th.LongTensor([0] + X_G.batch_num_nodes)
         assm_loss, assm_acc = self.assemble(candidates_G, candidates_G_idx, Y_T, X_G_embedding, Y_T_msgs, X_G_bnn)
         kl_div = -0.5 * th.sum(1 + logvar_G - mu_G ** 2 - th.exp(logvar_G)) / batch_size - \
                  0.5 * th.sum(1 + logvar_T - mu_T ** 2 - th.exp(logvar_T)) / batch_size
-        return topology_ce, label_ce, assm_loss, kl_div
+        return topology_ce, label_ce, assm_loss, kl_div, topo_acc, label_acc, assm_acc
 
     def process(self, batch, train=True):
         device = self.mu_G.weight.device

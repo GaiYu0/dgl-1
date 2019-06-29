@@ -5,7 +5,7 @@ import torch.optim as optim
 import torch.optim.lr_scheduler as lr_scheduler
 from torch.utils.data import DataLoader
 
-import math, random, sys
+import math, random, sys, pickle, os
 from argparse import ArgumentParser
 from collections import deque
 import rdkit
@@ -23,7 +23,7 @@ parser = ArgumentParser()
 parser.add_argument("--train", dest="train", type=str, default='train_pairs', help='Training file name')
 parser.add_argument("--vocab", dest="vocab", type=str, default='vocab', help='Vocab file name')
 parser.add_argument("--exp", dest="experiment", type=str, default="logp04", help="which experiment")
-parser.add_argument("--save_dir", type=str, dest="save_path")
+parser.add_argument("--save_dir", dest="save_dir", type=str, default="/models/", help="save_path")
 parser.add_argument("--model", dest="model_path", type=str, default=None)
 parser.add_argument("--batch", dest="batch_size", type=int, default=40)
 parser.add_argument("--hidden", dest="hidden_size", type=int, default=200)
@@ -77,6 +77,8 @@ args.d_edataG_dec = sample['bond_x_dec'].size(1)
 args.vocab_size = vocab.size()
 # args.d_edataT = 0
 model = Graph2Graph(args, vocab)
+cur_dir = os.getcwd()
+pickle.dump(args, open(cur_dir + args.save_dir + args.experiment + "/model_args.pickle", "wb"))
 #
 
 if opts.model_path is not None:
@@ -142,10 +144,11 @@ def train():
             #
             # X_G, X_T = process(batch[0])
             # Y_G, Y_T = process(batch[1])
-            topology_ce, label_ce, assm_loss, kl_div = model(batch)
+            topology_ce, label_ce, assm_loss, kl_div, topo_acc, label_acc, assm_acc = model(batch)
             loss = topology_ce + label_ce + assm_loss + kl_div
             print('topology %.3f | label %.3f | assm %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), assm_loss.item(), kl_div.item(), loss.item()))
-
+            print("accuracy: topology %.3f | label %.3f | assm %.3f"%(topo_acc, label_acc, assm_acc))
+            print("++++++++++++++++++++++++++++++++++++++\n")
             # Manually toggle on/off assm loss
             #loss = topology_ce + label_ce + kl_div
             #print('topology %.3f | label %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), kl_div.item(), loss.item()))
@@ -171,17 +174,18 @@ def train():
                 sys.stdout.flush()
             '''
 
-        '''
+        
             if (it + 1) % 1500 == 0: #Fast annealing
                 scheduler.step()
                 print("learning rate: %.6f" % scheduler.get_lr()[0])
                 torch.save(model.state_dict(),
-                           opts.save_path + "/model.iter-%d-%d" % (epoch, it + 1))
+                           opts.save_dir + "/model.iter-%d-%d" % (epoch, it + 1))
 
         scheduler.step()
+        print("EPOCH ", epoch)
         print("learning rate: %.6f" % scheduler.get_lr()[0])
-        torch.save(model.state_dict(), opts.save_path + "/model.iter-" + str(epoch))
-        '''
+        torch.save(model.state_dict(), opts.save_dir + opts.experiment + "/model.iter-" + str(epoch))
+        
 
 def test():
     dataset.training = False

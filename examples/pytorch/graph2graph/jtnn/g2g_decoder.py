@@ -272,6 +272,8 @@ class G2GDecoder(nn.Module):
         topology_ce = 0
         label_ce = 0
         roots = np.cumsum([0] + Y_T.batch_num_nodes)[:-1]
+        topology_count = 0
+        label_count = 0
         for i, eids in enumerate(self.dfs_order(Y_T, roots)):
             eids = eids.to(device)
             to_continue = self.to_continue(eids.cpu(), bnn.cpu())
@@ -293,6 +295,7 @@ class G2GDecoder(nn.Module):
             p = z_d @ self.u_d + self.b_d3  # Eq. (6)
             expand = 1 - eids % 2
             topology_ce += F.cross_entropy(p, expand)
+            topology_count += (th.argmax(p, dim=1) == expand).sum().float()
 
             # label prediction
             msg = T_lg.nodes[eids].data['msg']
@@ -305,8 +308,11 @@ class G2GDecoder(nn.Module):
             _, dst = Y_T.edges()
             dst = dst.to(device)
             label_ce += F.cross_entropy(q, Y_T.nodes[dst[eids]].data['wid'])
-
-        return topology_ce / (i + 1), label_ce / (i + 1)
+            label_count += (th.argmax(q, dim=1) == Y_T.nodes[dst[eids]].data['wid']).sum().float()
+        
+        topo_acc = topology_count / Y_T.number_of_edges()
+        label_acc = label_count / Y_T.number_of_nodes()
+        return topology_ce / (i + 1), label_ce / (i + 1), topo_acc, label_acc
 
     @staticmethod
     def dfs_order(forest, roots):
@@ -365,7 +371,7 @@ class G2GDecoder(nn.Module):
             end_lg_node_idx = T_lg.nodes()[-1]
             T.remove_nodes(end_node_idx)
             T_lg.remove_nodes(end_lg_node_idx)
-            self.stop = 1
+            self.expand = 0
             print("fail to find correct label, backtrack instead")
         else:
             end_node_idx = T.number_of_nodes() - 1
@@ -385,7 +391,6 @@ class G2GDecoder(nn.Module):
     
     def decode_backtrack(self, T, curr_nid, T_lg):
         parent = int(T.nodes[curr_nid].data['parent'].squeeze(0))
-        raise NotImplementedError
         T.add_edge([curr_nid], [parent])
         eid = T.number_of_edges() - 1
         copy_src(T, 'f', 'f_src')
@@ -432,7 +437,7 @@ class G2GDecoder(nn.Module):
         z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
         p = z_d @ self.u_d + self.b_d3
         
-        self.stop = th.argmax(p)
+        self.expand = th.argmax(p)
 
         return T, T_lg
 
@@ -479,18 +484,18 @@ class G2GDecoder(nn.Module):
         for _ in range(MAX_DECODE_LEN):
             gen_T, gen_T_lg = self.decode_stop(gen_T, curr_nid, d_context)
             #\TODO confirm that 0 means stop
-            if self.stop == 0:
+            if self.expand == 1:
                 print("non stop, go for label")
                 gen_T, gen_T_lg, curr_nid = self.decode_label(gen_T, curr_nid, d_context, gen_T_lg)
 
             # testing only! disable backtracking.
-            if self.stop == 1:
+            if self.expand == 0:
                 end_node_idx = gen_T.nodes()[-1]
                 gen_T.remove_nodes(end_node_idx)
-            self.stop = 0
+            self.expand = 1
 
             # test finish
-            if self.stop == 1:
+            if self.expand == 0:
                 print("backtrack!")
                 if curr_nid == 0:
                     print("terminate due to early stop")

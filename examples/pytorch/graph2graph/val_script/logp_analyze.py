@@ -28,5 +28,5 @@ for i in xrange(0, len(data), args.num_decode):
 assert len(all_logp) == n_mols
 all_logp = np.array(all_logp)
 
-print 'Evaluated on %d samples' % (n_mols,)
-print 'average improvement', np.mean(all_logp), 'stdev',  np.std(all_logp)
+print('Evaluated on %d samples' % (n_mols,))
+print('average improvement', np.mean(all_logp), 'stdev',  np.std(all_logp))

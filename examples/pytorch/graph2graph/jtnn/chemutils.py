@@ -253,8 +253,6 @@ def enum_attach_nx(ctr_mol, nei_node, amap, singletons):
 #Try rings first: Speed-Up 
 def enum_assemble_nx(node, neighbors, prev_nodes=[], prev_amap=[]):
     all_attach_confs = []
-    print(neighbors)
-    print(prev_nodes)
     singletons = [nei_node['nid'] for nei_node in neighbors + prev_nodes if nei_node['mol'].GetNumAtoms() == 1]
 
     def search(cur_amap, depth):

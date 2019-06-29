@@ -157,7 +157,7 @@ class Graph2GraphDataset(Dataset):
         return result
 
 class Graph2GraphCollator(object):
-    def __init__(self, vocab, training, mode='pair'):
+    def __init__(self, vocab, training=True, mode='pair'):
         self.vocab = vocab
         self.training = training
         self.mode = mode
