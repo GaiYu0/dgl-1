@@ -9,6 +9,8 @@ from .datautils import one_hotify
 from .chemutils import enum_assemble_nx, get_mol
 
 MAX_DECODE_LEN = 100
+EXPAND = 1
+NEXPAND = 0
 
 def copy_src(G, u, uv):
     src, dst = G.edges()
@@ -371,7 +373,7 @@ class G2GDecoder(nn.Module):
             end_lg_node_idx = T_lg.nodes()[-1]
             T.remove_nodes(end_node_idx)
             T_lg.remove_nodes(end_lg_node_idx)
-            self.expand = 0
+            self.expand = NEXPAND
             print("fail to find correct label, backtrack instead")
         else:
             end_node_idx = T.number_of_nodes() - 1
@@ -389,15 +391,25 @@ class G2GDecoder(nn.Module):
         
         return T, T_lg, curr_nid
     
-    def decode_backtrack(self, T, curr_nid, T_lg):
+    def decode_backtrack(self, T, curr_nid, old_T_lg):
+        device = T.ndata['f'].device
         parent = int(T.nodes[curr_nid].data['parent'].squeeze(0))
-        T.add_edge([curr_nid], [parent])
-        eid = T.number_of_edges() - 1
+
+        T.add_edges([curr_nid], [parent])
         copy_src(T, 'f', 'f_src')
         copy_dst(T, 'f', 'f_dst')
+
+        T_lg = T.line_graph(backtracking=False, shared=True)
+        T_lg.ndata['msg'] = th.zeros(T_lg.number_of_nodes(), self.d_msgT, device=device)
+        T_lg.ndata['sum_h'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
+        if old_T_lg is not None:
+            T_lg.ndata['msg'][:-1,:] = old_T_lg.ndata['msg'][:-1, :]
+            T_lg.ndata['sum_h'][:-1,:] = old_T_lg.ndata['sum_h'][:-1, :]
+        
+        eid = T.number_of_edges() - 1
         self.tree_gru(T_lg, eid)
 
-        curr_nid = T.nodes[curr_nid].data['parent']
+        curr_nid = int(T.nodes[curr_nid].data['parent'])
 
         return curr_nid
 
@@ -421,12 +433,15 @@ class G2GDecoder(nn.Module):
         eid = T.number_of_edges() - 1
         copy_src(T, 'f', 'f_src')
         copy_dst(T, 'f', 'f_dst')
+
+        # old_T_lg: DGL does not mantain a line graph dynamically
+
         T_lg = T.line_graph(backtracking=False, shared=True)
         T_lg.ndata['msg'] = th.zeros(T_lg.number_of_nodes(), self.d_msgT, device=device)
         T_lg.ndata['sum_h'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
         if old_T_lg is not None:
-            T_lg.ndata['msg'][:-1,:] = old_T_lg.ndata['msg']
-            T_lg.ndata['sum_h'][:-1,:] = old_T_lg.ndata['sum_h']
+            T_lg.ndata['msg'][:-1,:] = old_T_lg.ndata['msg'][:-1, :]
+            T_lg.ndata['sum_h'][:-1,:] = old_T_lg.ndata['sum_h'][:-1, :]
         h_message_fn = fn.copy_src(src='msg', out='msg')
         h_reduce_fn = fn.reducer.sum(msg='msg', out='sum_h')
         T_lg.pull(eid, h_message_fn, h_reduce_fn)
@@ -438,6 +453,20 @@ class G2GDecoder(nn.Module):
         p = z_d @ self.u_d + self.b_d3
         
         self.expand = th.argmax(p)
+
+        if self.expand == NEXPAND:
+            end_node_idx = T.nodes()[-1]
+            end_lg_node_idx = T_lg.nodes()[-1]
+            T.remove_nodes(end_node_idx)
+            if T.number_of_nodes() == 1:
+                return T, None # basecase, do not create new line graph
+            pruned_T_lg = T.line_graph(backtracking=False, shared=True)
+            pruned_T_lg.ndata['msg'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
+            pruned_T_lg.ndata['sum_h'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
+            pruned_T_lg.ndata['msg'] = T_lg.ndata['msg'][:-1,:]
+            pruned_T_lg.ndata['sum_h']= T_lg.ndata['sum_h'][:-1,:]
+            T_lg = pruned_T_lg
+
 
         return T, T_lg
 
@@ -458,6 +487,7 @@ class G2GDecoder(nn.Module):
         # x_T size: num_node x feat_dim, we assume that it's a single graph instance
         #assert x_T.size(0) == 1, "batch decoding not supported, please unbatch first"
 
+        print("###############START DECODING A MOLECULE#####################")
         device = x_G.device
 
         # during decoding, decoder only attends to the first tree/mol node embedding
@@ -469,6 +499,7 @@ class G2GDecoder(nn.Module):
         root_score = F.softmax(q, dim=1)
         _, root_wid = th.max(root_score, dim=1)
         root_wid = root_wid.item()
+        root_smiles = self.vocab.get_smiles(root_wid)
 
         gen_T = DGLMolTree()
         gen_T.add_nodes(1)
@@ -483,24 +514,15 @@ class G2GDecoder(nn.Module):
         gen_T.nodes_dict[curr_nid] = {'smiles':cur_smiles, 'wid':root_wid, 'slot':slot, 'mol':get_mol(cur_smiles)}
         for _ in range(MAX_DECODE_LEN):
             gen_T, gen_T_lg = self.decode_stop(gen_T, curr_nid, d_context)
-            #\TODO confirm that 0 means stop
-            if self.expand == 1:
+
+            if self.expand == EXPAND:
                 print("non stop, go for label")
                 gen_T, gen_T_lg, curr_nid = self.decode_label(gen_T, curr_nid, d_context, gen_T_lg)
 
-            # testing only! disable backtracking.
-            if self.expand == 0:
-                end_node_idx = gen_T.nodes()[-1]
-                gen_T.remove_nodes(end_node_idx)
-            self.expand = 1
-
-            # test finish
-            if self.expand == 0:
+            if self.expand == NEXPAND:
                 print("backtrack!")
                 if curr_nid == 0:
                     print("terminate due to early stop")
-                    end_node_idx = gen_T.nodes()[-1]
-                    gen_T.remove_nodes(end_node_idx)
                     return gen_T
                 curr_nid = self.decode_backtrack(gen_T, curr_nid, gen_T_lg)
         

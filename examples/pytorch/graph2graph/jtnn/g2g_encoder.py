@@ -59,6 +59,7 @@ class G2GEncoder(nn.Module):
             
             readout_apply_fn = lambda nodes: {'x' : self.g2_G(nodes.data['f'], nodes.data['sum_msg'])}
             G.update_all(readout_message_fn, readout_reduce_fn, readout_apply_fn)
+
         
         if T:
             T.ndata['f'] = T.ndata['id'] @ self.embeddings

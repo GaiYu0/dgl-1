@@ -82,7 +82,8 @@ pickle.dump(args, open(cur_dir + args.save_dir + args.experiment + "/model_args.
 #
 
 if opts.model_path is not None:
-    model.load_state_dict(torch.load(opts.model_path))
+    param = cur_dir + opts.save_dir + opts.experiment + "/" + opts.model_path
+    model.load_state_dict(torch.load(param))
 else:
     for param in model.parameters():
         if param.dim() == 1:

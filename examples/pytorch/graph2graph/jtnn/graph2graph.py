@@ -44,12 +44,12 @@ class Graph2Graph(nn.Module):
         g2_T = G2(args.d_ndataT, args.d_msgT, args.d_xT)
         g1_candidates_G = G1(args.d_ndataG_dec, args.d_edataG_dec,args.d_msgG)
         g2_candidates_G = G2(args.d_ndataG_dec, args.d_msgG, args.d_xG)
-        embeddings = nn.Parameter(1e-3 * th.rand(args.vocab_size, args.d_ndataT))
+        self.embeddings = nn.Parameter(1e-3 * th.rand(args.vocab_size, args.d_ndataT))
         #\TODO(hq) add option for separate embedding for Encoder/Decoder
-        self.encoder = G2GEncoder(embeddings, g1_G, g1_T, g2_G, g2_T,
+        self.encoder = G2GEncoder(self.embeddings, g1_G, g1_T, g2_G, g2_T,
                                   args.d_msgG, args.d_msgT, args.n_itersG, args.n_itersT)
 
-        self.decoder = G2GDecoder(embeddings, args.d_ndataG, args.d_ndataT, args.d_xG, args.d_xT,
+        self.decoder = G2GDecoder(self.embeddings, args.d_ndataG, args.d_ndataT, args.d_xG, args.d_xT,
                                   args.d_msgT, args.d_h, args.d_ud, [args.d_ul, args.vocab_size], vocab)
         self.g2g_jtmpn = g2g_JTMPN(g1_candidates_G, g2_candidates_G, args.d_msgG, args.d_msgT, args.n_itersG)
 
@@ -129,12 +129,11 @@ class Graph2Graph(nn.Module):
 
     def decode(self, x_T, x_G):
         gen_T = self.decoder.decode(x_T, x_G)
-        print(gen_T)
+        print("##########DECODER END##############")
         if gen_T.number_of_nodes() == 1: return gen_T.nodes_dict[0]['smiles']
         # set atom map, change to 1-indexed for this sake
         leaf_count = 0
         for id in gen_T.nodes():
-            print(gen_T.nodes_dict)
             id = int(id)
             gen_T.nodes_dict[id].update({'idx' : id})
             gen_T.nodes_dict[id].update({"nid": id + 1})
@@ -218,9 +217,7 @@ class Graph2Graph(nn.Module):
         
 
         cand_graphs_readout = dgl.sum_nodes(cand_graphs, 'x')
-        print(cand_graphs_readout.size())
         scores = cand_graphs_readout @ x_readout.t()
-        print(scores.size())
 
         _, cand_idx = th.sort(scores, descending=True)
 
@@ -230,7 +227,6 @@ class Graph2Graph(nn.Module):
         for i in range(min(cand_idx.numel(), 5)):
             cur_mol = Chem.RWMol(backup_mol)
             pred_amap = cand_amap[cand_idx[i].item()]
-            print(pred_amap)
             new_global_amap = copy.deepcopy(global_amap)
 
             for nei_id, ctr_atom, nei_atom in pred_amap:
