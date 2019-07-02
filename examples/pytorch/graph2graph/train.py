@@ -146,7 +146,7 @@ def train():
             # Y_G, Y_T = process(batch[1])
             topology_ce, label_ce, assm_loss, kl_div, topo_acc, label_acc, assm_acc = model(batch)
             loss = topology_ce + label_ce + assm_loss + kl_div
-            print('topology %.3f | label %.3f | assm %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), assm_loss.item(), kl_div.item(), loss.item()))
+            print('iteration %d | topology %.3f | label %.3f | assml %.3f | kl %.3f | %.3f' % (it, topology_ce.item(), label_ce.item(), assm_loss.item(), kl_div.item(), loss.item()))
             print("accuracy: topology %.3f | label %.3f | assm %.3f"%(topo_acc, label_acc, assm_acc))
             print("++++++++++++++++++++++++++++++++++++++\n")
             # Manually toggle on/off assm loss
@@ -178,13 +178,14 @@ def train():
             if (it + 1) % 1500 == 0: #Fast annealing
                 scheduler.step()
                 print("learning rate: %.6f" % scheduler.get_lr()[0])
+                print("saving model")
                 torch.save(model.state_dict(),
-                           opts.save_dir + "/model.iter-%d-%d" % (epoch, it + 1))
+                           cur_dir + opts.save_dir + opts.experiment + "/model.iter-%d-%d" % (epoch, it + 1))
 
         scheduler.step()
         print("EPOCH ", epoch)
         print("learning rate: %.6f" % scheduler.get_lr()[0])
-        torch.save(model.state_dict(), opts.save_dir + opts.experiment + "/model.iter-" + str(epoch))
+        torch.save(model.state_dict(), cur_dir + opts.save_dir + opts.experiment + "/model.iter-" + str(epoch))
         
 
 def test():
