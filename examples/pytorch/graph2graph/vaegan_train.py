@@ -27,6 +27,8 @@ parser.add_argument("--vocab", dest="vocab", type=str, default='vocab', help='Vo
 parser.add_argument("--exp", dest="experiment", type=str, default="qed", help="which experiment")
 parser.add_argument("--save_dir", dest="save_dir", type=str, default="/models/", help="save_path")
 parser.add_argument("--model", dest="model_path", type=str, default=None)
+parser.add_argument("--epoch", dest="epoch", type=int, default=100, help="num of epoch max")
+parser.add_argument("--load_epoch", dest="load_epoch", type=int, default=-1, help="load param's epoch num")
 parser.add_argument("--batch", dest="batch_size", type=int, default=40)
 parser.add_argument("--hidden", dest="hidden_size", type=int, default=200)
 parser.add_argument("--latent", dest="latent_size", type=int, default=56)
@@ -34,6 +36,7 @@ parser.add_argument("--depth", dest="depth", type=int, default=3)
 parser.add_argument("--beta", dest="beta", type=int, default=1.0)
 
 # Ported from arae_train.py, not sure what are these
+parser.add_argument("--diter", dest="diter", type=int, default=5, help="descriminator num of iteration")
 parser.add_argument("--disc_hidden", dest="disc_hidden", type=int, default=300, help="TODO")
 parser.add_argument("--gan_batch_size", dest="gan_batch_size", type=int, default=10, help="gan_batch_size")
 parser.add_argument("gumbel", action="store_true")
@@ -67,6 +70,7 @@ opts = parser.parse_args()
 print(opts)
 
 print("loading dataset!")
+#TODO(hq): take care of the replicate arg
 x_dataset = Graph2GraphDataset(data=opts.train, vocab=opts.vocab, training=False, exp=opts.experiment, mode="pair")
 # \TODO is there any one-to-one correspondence between x_dataset?
 y_dataset = Graph2GraphDataset(data=opts.ymols, vocab=opts.vocab, training=False, exp=opts.experiment, mode='single')
@@ -87,7 +91,7 @@ lrG = float(opts.gan_lrG)
 lrD = float(opts.gan_lrD)
 #
 
-sample = dataset[0][0]
+sample = main_dataset[0][0]
 args = opts
 args.d_ndataG = sample['atom_x_enc'].size(1)
 args.d_edataG = sample['bond_x_enc'].size(1)
@@ -136,86 +140,90 @@ optimizerD = optim.Adam(GAN.netD.parameters(), lr=lrD, betas=(0, 0.9))
 scheduler = lr_scheduler.ExponentialLR(optimizer, opts.anneal_rate)
 scheduler.step()
 
-MAX_EPOCH = 100
+MAX_EPOCH = opts.epoch
 PRINT_ITER = 1
 
 param_norm = lambda m: math.sqrt(sum([p.norm().item() ** 2 for p in m.parameters()]))
 grad_norm = lambda m: math.sqrt(sum([p.grad.norm().item() ** 2 for p in m.parameters() if p.grad is not None]))
 
 assert opts.gan_batch_size <= opts.batch_size
+num_epoch = (opts.epoch - opts.load_epoch - 1) * (opts.diter + 1) * 10
 
+x_dataloader = DataLoader(
+    x_dataset,
+    batch_size=opts.gan_batch_size,
+    shuffle=True,
+    num_workers=0,
+    collate_fn=Graph2GraphCollator(vocab, training=False, mode="pair"),
+    drop_last=True,
+    worker_init_fn=worker_init_fn
+)
+y_dataloader = DataLoader(
+    y_dataset,
+    batch_size=opts.gan_batch_size,
+    shuffle=True,
+    num_workers=0,
+    collate_fn=Graph2GraphCollator(vocab, training=False, mode='single'),
+    drop_last=True,
+    worker_init_fn=worker_init_fn
+)
+main_dataloader = DataLoader(
+    main_dataset,
+    batch_size=opts.gan_batch_size,
+    shuffle=True,
+    num_workers=0,
+    collate_fn=Graph2GraphCollator(vocab, training=True, mode="pair"),
+    drop_last=True,
+    worker_init_fn=worker_init_fn
+)
+x_dataloader = iter(x_dataloader)
+y_datloader = iter(y_dataloader)
 
-
-
-# WIPPPPPPPPPP
-def train():
-    dataset.training = True
-    dataloader = DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=0,
-            collate_fn=Graph2GraphCollator(vocab, True, mode="pair"),
-            drop_last=True,
-            worker_init_fn=worker_init_fn)
-
-    for epoch in range(MAX_EPOCH):
-        word_acc,topo_acc,assm_acc,steo_acc = 0,0,0,0
-
-        for it, batch in enumerate(dataloader):
-            model.zero_grad()
-            '''
-            try:
-                loss, kl_div, wacc, tacc, sacc, dacc = model(batch, beta)
-            except:
-                print([t.smiles for t in batch['mol_trees']])
-                raise
-            '''
-            #
-            # X_G, X_T = process(batch[0])
-            # Y_G, Y_T = process(batch[1])
-            topology_ce, label_ce, assm_loss, kl_div, topo_acc, label_acc, assm_acc = model(batch)
-            print("#### This is model embedding")
-            print(model.embeddings)
-            print("########")
-            loss = topology_ce + label_ce + assm_loss + kl_div
-            print('iteration %d | topology %.3f | label %.3f | assml %.3f | kl %.3f | %.3f' % (it, topology_ce.item(), label_ce.item(), assm_loss.item(), kl_div.item(), loss.item()))
-            print("accuracy: topology %.3f | label %.3f | assm %.3f"%(topo_acc, label_acc, assm_acc))
-            print("++++++++++++++++++++++++++++++++++++++\n")
-            # Manually toggle on/off assm loss
-            #loss = topology_ce + label_ce + kl_div
-            #print('topology %.3f | label %.3f | kl %.3f | %.3f' % (topology_ce.item(), label_ce.item(), kl_div.item(), loss.item()))
-            
-            loss.backward()
-            optimizer.step()
-
-            '''
-            word_acc += wacc
-            topo_acc += tacc
-            assm_acc += sacc
-            steo_acc += dacc
-
-            if (it + 1) % PRINT_ITER == 0:
-                word_acc = word_acc / PRINT_ITER * 100
-                topo_acc = topo_acc / PRINT_ITER * 100
-                assm_acc = assm_acc / PRINT_ITER * 100
-                steo_acc = steo_acc / PRINT_ITER * 100
-
-                print("KL: %.1f, Word: %.2f, Topo: %.2f, Assm: %.2f, Steo: %.2f, Loss: %.6f" % (
-                    kl_div, word_acc, topo_acc, assm_acc, steo_acc, loss.item()))
-                word_acc,topo_acc,assm_acc,steo_acc = 0,0,0,0
-                sys.stdout.flush()
-            '''
-
+for epoch in range(opts.load_epoch + 1, MAX_EPOCH):
+    for it, batch in enumerate(main_dataloader):
         
-            if (it + 1) % 1500 == 0: #Fast annealing
-                scheduler.step()
-                print("learning rate: %.6f" % scheduler.get_lr()[0])
-                print("saving model")
-                torch.save(model.state_dict(),
-                           cur_dir + opts.save_dir + opts.experiment + "/model.iter-%d-%d" % (epoch, it + 1))
+        #1. Train encoder & decoder
+        model.zero_grad()
+        topology_ce, label_ce, assm_loss, kl_div, topo_acc, label_acc, assm_acc = model(batch)
+        loss = topology_ce + label_ce + assm_loss + kl_div
+        print('iteration %d | topology %.3f | label %.3f | assml %.3f | kl %.3f | %.3f' % (it, topology_ce.item(), label_ce.item(), assm_loss.item(), kl_div.item(), loss.item()))
+        print("accuracy: topology %.3f | label %.3f | assm %.3f"%(topo_acc, label_acc, assm_acc))
+        print("++++++++++++++++++++++++++++++++++++++\n")
+        nn.utils.clip_grad_norm_(model.parameters(), opts.clip_norm)
+        optimizer.step()
 
-        scheduler.step()
-        print("EPOCH ", epoch)
-        print("learning rate: %.6f" % scheduler.get_lr()[0])
-        torch.save(model.state_dict(), cur_dir + opts.save_dir + opts.experiment + "/model.iter-" + str(epoch))
+        #2. Train discriminator
+        for i in range(opts.diter):
+            GAN.netD.zero_grad()
+            x_batch = next(x_dataloader)
+            y_batch = next(y_dataloader)
+            # Notice that x_batch still contains an unnecessary y
+            d_loss, gp_loss = GAN.train_D(x_batch, y_batch, model)
+            optimizerD.step()
+        
+        #3. Train generator(ARAE fashion)
+        model.zero_grad()
+        GAN.zero_grad()
+        x_batch, _ = next(x_dataloader)
+        y_batch = next(y_dataloader)
+        g_loss = GAN.train_G(x_batch, y_batch, model)
+        nn.utils.clip_grad_norm(model.parameters(), opts.clip_norm)
+        optimizerG.step()
+        print("Disc: %.3f, Gen: %.4f, GP: %.4f, PNorm: %.2f, %.2f, GNorm: %.2f, %2f" %
+        (d_loss, g_loss, gp_loss, param_norm(model), param_norm(GAN.netD), grad_norm(model), grad_norm(GAN.netD)))
+
+         if (it + 1) % 1500 == 0: #Fast annealing
+            scheduler.step()
+            print("learning rate: %.6f" % scheduler.get_lr()[0])
+            print("saving model")
+            torch.save(model.state_dict(),
+                       cur_dir + opts.save_dir + opts.experiment + "/model.iter-%d-%d" % (epoch, it + 1))
+            torch.save(gan.state_dict(),
+                       cur_dir + opts.save_dir + opts.experiment + "/model.iter-%d-%d" % (epoch, it + 1) + "-gan")
+
+
+    scheduler.step()
+    print("EPOCH ", epoch)
+    print("learning rate: %.6f" % scheduler.get_lr()[0])
+    torch.save(model.state_dict(), cur_dir + opts.save_dir + opts.experiment + "/model.iter-" + str(epoch))
+    torch.save(GAN.state_dict(), cur_dir + opts.save_dir + opts.experiment + "/model.iter-" + str(epoch)+"-gan")
