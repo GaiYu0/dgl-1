@@ -146,6 +146,9 @@ def train():
             # X_G, X_T = process(batch[0])
             # Y_G, Y_T = process(batch[1])
             topology_ce, label_ce, assm_loss, kl_div, topo_acc, label_acc, assm_acc = model(batch)
+            print("#### This is model embedding")
+            print(model.embeddings)
+            print("########")
             loss = topology_ce + label_ce + assm_loss + kl_div
             print('iteration %d | topology %.3f | label %.3f | assml %.3f | kl %.3f | %.3f' % (it, topology_ce.item(), label_ce.item(), assm_loss.item(), kl_div.item(), loss.item()))
             print("accuracy: topology %.3f | label %.3f | assm %.3f"%(topo_acc, label_acc, assm_acc))

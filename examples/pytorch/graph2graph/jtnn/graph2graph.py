@@ -290,7 +290,17 @@ class Graph2Graph(nn.Module):
         XT_bnn = th.tensor(X_T.batch_num_nodes, device=device)
 
         self.encoder(X_G, X_T)
+        print("#### THIS IS X_G embedding")
+        print(X_G.ndata['x'])
+        print('###### This is X_T embedding')
+        print(X_T.ndata['x'])
+        print('########')
         self.encoder(Y_G, Y_T)
+        print("#### THIS IS Y_G embedding")
+        print(Y_G.ndata['x'])
+        print('###### This is Y_T embedding')
+        print(th.sum(Y_T.ndata['x']))
+        print('########')
 
         X_G_embedding = X_G.ndata['x']
         x_G_tilde, mu_G, logvar_G = self.sample_from_diff(X_G, Y_G, self.mu_G, self.logvar_G,

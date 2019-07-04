@@ -77,13 +77,19 @@ with open(cur_dir + "/exp_temp/" + args.experiment + "_temp.txt", 'w') as file:
         gt_smiles = batch['mol_trees'][0].smiles
         print("ground truth smiles is ", gt_smiles)
         X_G, X_T = model.process(batch, train=False)
+        print("original features")
+        print(X_G.ndata['f'])
+        print(model.embeddings)
+        print("##########")
         model.encoder(X_G, X_T)
 
         tree_vec, mol_vec = X_T.ndata['x'], X_G.ndata['x']
+        print(tree_vec)
+        print(mol_vec)
         for i in range(args.num_decode):
              
             # disable the line below to test autoencoder for the time being
-            #tree_vec, mol_vec = model.sample_with_noise(tree_vec, mol_vec)
+            # tree_vec, mol_vec = model.sample_with_noise(tree_vec, mol_vec)
             smiles = model.decode(tree_vec, mol_vec)
             print(smiles)
             file.write(gt_smiles + "," + smiles + "\n")
