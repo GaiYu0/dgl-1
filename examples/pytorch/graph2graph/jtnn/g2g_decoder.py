@@ -391,6 +391,27 @@ class G2GDecoder(nn.Module):
         
         return T, T_lg, curr_nid
     
+    def soft_decode_label(self, T, curr_nid, context, T_lg, stop_val_ste):
+        device = T.ndata['f'].device
+
+        eid = T.number_of_edges() - 1
+        if len(T_lg.predecessors(eid)) == 0:
+            msg = th.zeros(1, self.d_msgT).to(device)
+        else:
+            self.tree_gru(T_lg, eid)
+            msg = T_lg.nodes[eid].data['msg']
+        T_lg.nodes[eid].data['msg'] *= stop_val_ste
+        c_l = context # Eq. (8)
+        z_l = th.relu(msg @ self.w_l1 + c_l @ self.w_l2 + self.b_l1)
+        q = z_l @ self.u_l + self.b_l2  # Eq. (9)
+        
+        pred_prob = self.sample_softmax(q)
+        end_node_idx = T.number_of_nodes() - 1
+        curr_nid = end_node_idx
+        T.nodes[curr_nid].data['f'] = self.soft_embedding(pred_prob)
+
+        return T, T_lg, curr_nid
+            
     def decode_backtrack(self, T, curr_nid, old_T_lg):
         device = T.ndata['f'].device
         parent = int(T.nodes[curr_nid].data['parent'].squeeze(0))
@@ -413,10 +434,31 @@ class G2GDecoder(nn.Module):
 
         return curr_nid
 
+    def soft_decode_backtrack(self, T, curr_nid, old_T_lg, stop_val_ste):
+        device = T.ndata['f'].device
+        parent = int(T.nodes[curr_nid].data['parent'].squeeze(0))
+
+        T.add_edges([curr_nid], [parent])
+        copy_src(T, 'f', 'f_src')
+        copy_dst(T, 'f', 'f_dst')
+
+        T_lg = T.line_graph(backtracking=False, shared=True)
+        T_lg.ndata['msg'] = th.zeros(T_lg.number_of_nodes(), self.d_msgT, device=device)
+        T_lg.ndata['sum_h'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
+        if old_T_lg is not None:
+            T_lg.ndata['msg'][:-1,:] = old_T_lg.ndata['msg'][:-1, :]
+            T_lg.ndata['sum_h'][:-1,:] = old_T_lg.ndata['sum_h'][:-1, :]
+        
+        eid = T.number_of_edges() - 1
+        self.tree_gru(T_lg, eid)
+
+        # edit edge feature here:
+        T_lg.nodes[eid].data['h'] *= (1.0 - stop_val_ste) # what is new_h[0]?
+
+        curr_nid = int(T.nodes[curr_nid].data['parent'])
 
 
 
-    
     def decode_stop(self, T, curr_nid, context, old_T_lg = None):
         device = T.ndata['f'].device
         cur_label = one_hotify([T.nodes_dict[curr_nid]['wid']], 
@@ -425,8 +467,6 @@ class G2GDecoder(nn.Module):
         # use the embedding of current wid to initiate f.
         f = cur_label @ self.embeddings
         T.nodes[curr_nid].data['f'] = f
-
-        device = T.ndata['f'].device
 
         T.add_nodes(1)
         T.add_edges([curr_nid], [T.nodes()[-1]])
@@ -447,6 +487,7 @@ class G2GDecoder(nn.Module):
         T_lg.pull(eid, h_message_fn, h_reduce_fn)
         f_src = T_lg.nodes[eid].data['f_src']
         sum_h = T_lg.nodes[eid].data['sum_h']
+
         h = F.relu(f_src @ self.w_d1 +  sum_h @ self.w_d2 + self.b_d1)  # Eq. (4)
         c_d = context # Eq. (8), only attend to root
         z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
@@ -469,6 +510,123 @@ class G2GDecoder(nn.Module):
 
 
         return T, T_lg
+    
+    def soft_decode_stop(self, T, curr_nid, context, all_hiddens, old_T_lg = None):
+        device = T.ndata['f'].device
+        cur_label = one_hotify([T.nodes_dict[curr_nid]['wid']], 
+                                pad=self.u_l.size(1))
+        cur_label = cur_label.to(device)
+        # use the embedding of current wid to initiate f.
+        f = cur_label @ self.embeddings
+        T.nodes[curr_nid].data['f'] = f
+
+        T.add_nodes(1)
+        T.add_edges([curr_nid], [T.nodes()[-1]])
+        eid = T.number_of_edges() - 1
+        copy_src(T, 'f', 'f_src')
+        copy_dst(T, 'f', 'f_dst')
+
+        # old_T_lg: DGL does not mantain a line graph dynamically
+
+        T_lg = T.line_graph(backtracking=False, shared=True)
+        T_lg.ndata['msg'] = th.zeros(T_lg.number_of_nodes(), self.d_msgT, device=device)
+        T_lg.ndata['sum_h'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
+        if old_T_lg is not None:
+            T_lg.ndata['msg'][:-1,:] = old_T_lg.ndata['msg'][:-1, :]
+            T_lg.ndata['sum_h'][:-1,:] = old_T_lg.ndata['sum_h'][:-1, :]
+        h_message_fn = fn.copy_src(src='msg', out='msg')
+        h_reduce_fn = fn.reducer.sum(msg='msg', out='sum_h')
+        T_lg.pull(eid, h_message_fn, h_reduce_fn)
+        f_src = T_lg.nodes[eid].data['f_src']
+        sum_h = T_lg.nodes[eid].data['sum_h']
+
+                
+        self.cur_x = f_src
+        self.cur_h = sum_h
+
+
+        h = F.relu(f_src @ self.w_d1 +  sum_h @ self.w_d2 + self.b_d1)  # Eq. (4)
+        c_d = context # Eq. (8), only attend to root
+        z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
+        all_hiddens.append(h)
+        p = z_d @ self.u_d + self.b_d3
+        
+        # We consider self.expand as stop score for the time being
+        self.expand = th.argmax(p) #\TODO stop score binary or unary?
+
+        stop_prob = F.hardtanh(slope * self.expand + 0.5, min_val=0, max_val=1).unsqueeze(1)
+        stop_val_ste = self.expand + stop_prob - stop_prob.detach() # straight through estimator
+
+        if self.expand == NEXPAND:
+            end_node_idx = T.nodes()[-1]
+            end_lg_node_idx = T_lg.nodes()[-1]
+            T.remove_nodes(end_node_idx)
+            if T.number_of_nodes() == 1:
+                return T, None # basecase, do not create new line graph
+            pruned_T_lg = T.line_graph(backtracking=False, shared=True)
+            pruned_T_lg.ndata['msg'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
+            pruned_T_lg.ndata['sum_h'] = th.zeros(T.number_of_edges(), self.d_msgT, device=device)
+            pruned_T_lg.ndata['msg'] = T_lg.ndata['msg'][:-1,:]
+            pruned_T_lg.ndata['sum_h']= T_lg.ndata['sum_h'][:-1,:]
+            T_lg = pruned_T_lg
+
+
+        return T, T_lg, all_hiddens, stop_val_ste
+
+    def soft_decode(self, x_T, x_G, gumbel, slope, temp):
+        self.soft_embedding = lambda x: x @ self.embeddings
+        if gumbel:
+            self.sample_softmax = lambda x: F.gumbel_softmax(x, tau=temp)
+        else:
+            self.sample_softmax = lambda x: F.softmax(x / temp, dim=1)
+        
+        device = x_G.device
+
+        # during decoding, decoder only attends to the first tree/mol node embedding
+        d_context = th.cat([th.unsqueeze(x_T[0,:],0), th.unsqueeze(x_G[0,:],0)], 1) # Eq. (8)
+        # init_h (message vector) is a zero vector
+        z_l = th.relu(d_context @ self.w_l2 + self.b_l1)
+        q = z_l @ self.u_l + self.b_l2  # Eq. (9)
+        root_prob = self.sample_softmax(q)
+        # we do not predict the most likely wid
+
+        gen_T = DGLMolTree()
+        gen_T.add_nodes(1)
+        gen_T.ndata['f'] = self.soft_embedding(root_prob)
+        gen_T.ndata['parent'] = (th.LongTensor([-1]).unsqueeze(0)).to(device)
+        curr_nid = 0
+
+        all_hiddens = []
+        self.cur_x = None
+        self.cur_h = None
+
+        for i in range(MAX_DECODE_LEN):
+            if i == 0:
+                gen_T, gen_T_lg, all_hiddens, stop_val_ste = self.soft_decode_stop(gen_T, 
+                                                                    curr_nid, d_context, all_hiddens)
+            else:
+                gen_T, gen_T_lg, all_hiddens, stop_val_ste = self.soft_decode_stop(gen_T, 
+                                                                    curr_nid, d_context, all_hiddens, gen_T_lg)
+            
+            if self.expand == EXPAND:
+                gen_T, gen_T_lg, curr_nid = self.soft_decode_label(gen_T, curr_nid, d_context, gen_T_lg, stop_val_ste)
+            
+            else: # Not expand
+                if gen_T.number_of_nodes() == 1:
+                    return th.cat([self.cur_x, self.cur_h], dim=1) #\TODO fix this
+                else:
+                    curr_nid = self.soft_decode_backtrack(gen_T, curr_nid, gen_T_lg, stop_val_ste)
+        
+        readout_msg_fn = fn.copy_edge('h', 'msg')
+        readout_reduce_fn = fn.reducer.sum('msg', 'sum_h')
+        readout_apply_fn = lambda nodes : {"r" : th.cat(nodes.data['f'], nodes.data['sum_msg'])}
+        gen_T.update_all(readout_msg_fn, readout_reduce_fn, readout_apply_fn)
+
+        return Y_T.nodes[0].data['r']
+
+
+
+
 
     
     def decode(self, x_T, x_G):
@@ -512,8 +670,12 @@ class G2GDecoder(nn.Module):
         curr_nid = 0
         
         gen_T.nodes_dict[curr_nid] = {'smiles':cur_smiles, 'wid':root_wid, 'slot':slot, 'mol':get_mol(cur_smiles)}
-        for _ in range(MAX_DECODE_LEN):
-            gen_T, gen_T_lg = self.decode_stop(gen_T, curr_nid, d_context)
+        for i in range(MAX_DECODE_LEN):
+            if i == 0:
+                # a line graph is initialized in the first step
+                gen_T, gen_T_lg = self.decode_stop(gen_T, curr_nid, d_context)
+            else:
+                gen_T, gen_T_lg = self.decode_stop(gen_T, curr_nid, d_context, gen_T_lg)
 
             if self.expand == EXPAND:
                 print("non stop, go for label")
