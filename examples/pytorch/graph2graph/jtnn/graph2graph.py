@@ -44,15 +44,23 @@ class Graph2Graph(nn.Module):
         g2_T = G2(args.d_ndataT, args.d_msgT, args.d_xT)
         g1_candidates_G = G1(args.d_ndataG_dec, args.d_edataG_dec,args.d_msgG)
         g2_candidates_G = G2(args.d_ndataG_dec, args.d_msgG, args.d_xG)
+        
         self.embeddings = nn.Parameter(1e-3 * th.rand(args.vocab_size, args.d_ndataT))
-        #\TODO(hq) add option for separate embedding for Encoder/Decoder
+        
+        # = self.jtnn
+        # d_msgG = d_msgT = hidden_size
         self.encoder = G2GEncoder(self.embeddings, g1_G, g1_T, g2_G, g2_T,
                                   args.d_msgG, args.d_msgT, args.n_itersG, args.n_itersT)
 
         self.decoder = G2GDecoder(self.embeddings, args.d_ndataG, args.d_ndataT, args.d_xG, args.d_xT,
                                   args.d_msgT, args.d_h, args.d_ud, [args.d_ul, args.vocab_size], vocab)
+        
+        # depth_G = n_itersG
         self.g2g_jtmpn = g2g_JTMPN(g1_candidates_G, g2_candidates_G, args.d_msgG, args.d_msgT, args.n_itersG)
 
+        
+        
+        # sampling param
         self.w1 = nn.Parameter(1e-3 * th.rand(args.d_xG, args.d_xG))
         self.w2 = nn.Parameter(1e-3 * th.rand(args.d_zG, args.d_xG))
         self.b1 = nn.Parameter(th.zeros(1, args.d_xG))
@@ -66,7 +74,10 @@ class Graph2Graph(nn.Module):
         self.mu_T = nn.Linear(args.d_xT, args.d_zT)
         self.logvar_T = nn.Linear(args.d_xT, args.d_zT)
 
+        # assembling param
         self.A_assm = nn.Linear(args.d_xG, args.d_xG, bias=False)
+        # Not used
+        # self.assm_loss = nn.CrossEntropyLoss(size_average=False)
 
         self.mode = "train"
         self.vocab = vocab
@@ -269,10 +280,15 @@ class Graph2Graph(nn.Module):
         # \TODO I'm actually not sure whether the shape is right for batch version.
         device = X.ndata['f'].device
         X_bnn = th.tensor(X.batch_num_nodes, device=device)
-        delta = dgl.sum_nodes(X, 'x') - dgl.sum_nodes(Y, 'x') # Eq. (11)
+        Y_bnn = th.FloatTensor(Y.batch_num_nodes).unsqueeze(1).to(device)
+        # NOTICE: gaiyu->hq: implementation changed to Y - X
+        delta = dgl.sum_nodes(Y, 'x') - dgl.sum_nodes(X, 'x') # Eq. (11)
+        # Normalized by the size of y
+        delta /= Y_bnn
+
         mu = mean_gen(delta)
         logvar = -th.abs(var_gen(delta)) # Mueller et al.
-        z = mu + th.exp(logvar) ** 0.5 * th.rand_like(mu, device=device) # Eq. (12)
+        z = mu + th.exp(logvar / 2) * th.rand_like(mu, device=device) # Eq. (12)
         z = th.repeat_interleave(z, X_bnn, 0)
         x = X.ndata['x']
         x_tilde = F.relu(x @ w1 + z @ w2 + b) # Eq. (13)
@@ -324,8 +340,8 @@ class Graph2Graph(nn.Module):
         # 0 start
         X_G_bnn = th.LongTensor([0] + X_G.batch_num_nodes)
         assm_loss, assm_acc = self.assemble(candidates_G, candidates_G_idx, Y_T, X_G_embedding, Y_T_msgs, X_G_bnn)
-        kl_div = -0.5 * th.sum(1 + logvar_G - mu_G ** 2 - th.exp(logvar_G)) / batch_size - \
-                 0.5 * th.sum(1 + logvar_T - mu_T ** 2 - th.exp(logvar_T)) / batch_size
+        kl_div = -0.5 * th.sum(1.0 + logvar_G - mu_G * mu_G - th.exp(logvar_G)) / batch_size - \
+                 0.5 * th.sum(1 + logvar_T - mu_T * mu_G - th.exp(logvar_T)) / batch_size
         return topology_ce, label_ce, assm_loss, kl_div, topo_acc, label_acc, assm_acc
 
     def process(self, batch, train=True):

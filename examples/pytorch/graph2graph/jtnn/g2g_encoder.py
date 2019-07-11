@@ -24,6 +24,8 @@ class G2GEncoder(nn.Module):
         d_msgT : dimension of junction tree's message vector in message passing
         n_itersG : number of iterations for graph's message passing
         n_itersT : number of iterations for graph's message passing
+
+        Verified that this is identical with the paper's implementation, besides some bias setting.
         """
         super(G2GEncoder, self).__init__()
 

@@ -378,7 +378,7 @@ class G2GDecoder(nn.Module):
         else:
             end_node_idx = T.number_of_nodes() - 1
             cur_smiles = self.vocab.get_smiles(next_wid)
-            print("cur smiles is ", cur_smiles)
+            # print("cur smiles is ", cur_smiles)
             #print(" number of node in the gen tree is ", T.number_of_nodes())
             T.nodes_dict[end_node_idx] = {}
             T.nodes_dict[end_node_idx]['smiles'] = cur_smiles
@@ -649,6 +649,7 @@ class G2GDecoder(nn.Module):
         device = x_G.device
 
         # during decoding, decoder only attends to the first tree/mol node embedding
+        #\TODO This is not True!!!!!! It actually attends to the first graph.
         d_context = th.cat([th.unsqueeze(x_T[0,:],0), th.unsqueeze(x_G[0,:],0)], 1) # Eq. (8)
         # init_h (message vector) is a zero vector
         z_l = th.relu(d_context @ self.w_l2 + self.b_l1)
@@ -658,6 +659,8 @@ class G2GDecoder(nn.Module):
         _, root_wid = th.max(root_score, dim=1)
         root_wid = root_wid.item()
         root_smiles = self.vocab.get_smiles(root_wid)
+        print("root_wid is ", root_wid)
+        print("root smiles is ", root_smiles)
 
         gen_T = DGLMolTree()
         gen_T.add_nodes(1)
@@ -678,7 +681,7 @@ class G2GDecoder(nn.Module):
                 gen_T, gen_T_lg = self.decode_stop(gen_T, curr_nid, d_context, gen_T_lg)
 
             if self.expand == EXPAND:
-                print("non stop, go for label")
+                # print("non stop, go for label")
                 gen_T, gen_T_lg, curr_nid = self.decode_label(gen_T, curr_nid, d_context, gen_T_lg)
 
             if self.expand == NEXPAND:
