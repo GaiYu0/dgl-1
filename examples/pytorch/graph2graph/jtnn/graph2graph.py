@@ -340,8 +340,8 @@ class Graph2Graph(nn.Module):
         # 0 start
         X_G_bnn = th.LongTensor([0] + X_G.batch_num_nodes)
         assm_loss, assm_acc = self.assemble(candidates_G, candidates_G_idx, Y_T, X_G_embedding, Y_T_msgs, X_G_bnn)
-        kl_div = -0.5 * th.sum(1.0 + logvar_G - mu_G * mu_G - th.exp(logvar_G)) / batch_size - \
-                 0.5 * th.sum(1.0 + logvar_T - mu_T * mu_G - th.exp(logvar_T)) / batch_size
+        kl_div = -0.5 * th.sum(1 + logvar_G - mu_G ** 2 - th.exp(logvar_G)) / batch_size - \
+                 0.5 * th.sum(1 + logvar_T - mu_T ** 2 - th.exp(logvar_T)) / batch_size
         return topology_ce, label_ce, assm_loss, kl_div, topo_acc, label_acc, assm_acc
 
     def process(self, batch, train=True):
