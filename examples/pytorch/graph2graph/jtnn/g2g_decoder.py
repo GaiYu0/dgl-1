@@ -81,6 +81,8 @@ class TreeGRU(nn.Module):
             field for source node data
         f_dst_key : str
             field for destination node data
+
+        Tree GRU has been verified.
         """
         super(TreeGRU, self).__init__()
 
@@ -161,6 +163,8 @@ class Attention(nn.Module):
         ----------
         d_h : dimension of $h_t$ in Eq. (25)
         d_x : dimension of $x_i^T$ or $x_i^G$ in Eq. (25)
+
+        Attention has been verified
         """
         super(Attention, self).__init__()
         self.a = nn.Parameter(1e-3 * th.rand(d_h, d_x)) if a is None else a
@@ -175,6 +179,7 @@ class Attention(nn.Module):
         device = h.device
         bnn = th.tensor(G.batch_num_nodes, device=device)
         G.ndata['s'] = th.sum(G.ndata['x'] * th.repeat_interleave(h @ self.a, bnn, 0), 1)
+        #numerical stability
         G.ndata['exp'] = th.exp(G.ndata['s'] - th.repeat_interleave(dgl.max_nodes(G, 's'), bnn))
         z = th.repeat_interleave(dgl.sum_nodes(G, 'exp'), bnn)
         a = th.unsqueeze(G.ndata['exp'] / z, 1)  # Eq. (25)
@@ -227,8 +232,9 @@ class G2GDecoder(nn.Module):
         self.w_d4 = nn.Parameter(1e-3 * th.rand(d_xT + d_xG, d_ud))
         self.b_d2 = nn.Parameter(th.zeros(1, d_ud))
 
-        self.u_d = nn.Parameter(1e-3 * th.rand(d_ud, 2))
-        self.b_d3 = nn.Parameter(th.zeros(2))
+        # (hq) change u_d to BCEWithLogitLoss, from 2 to 1
+        self.u_d = nn.Parameter(1e-3 * th.rand(d_ud, 1))
+        self.b_d3 = nn.Parameter(th.zeros(1))
 
         self.w_l1 = nn.Parameter(1e-3 * th.rand(d_msgT, d_ul[0]))
         self.w_l2 = nn.Parameter(1e-3 * th.rand(d_xT + d_xG, d_ul[0]))
@@ -244,6 +250,8 @@ class G2GDecoder(nn.Module):
 
         self.u_l = nn.Parameter(1e-3 * th.rand(*d_ul))
         self.b_l2 = nn.Parameter(th.zeros(1, d_ul[1]))
+
+        self.stop_loss = nn.BCEWithLogitsLoss(size_average=False)
 
     def forward(self, X_G, X_T, Y_G, Y_T):
         """
@@ -295,9 +303,15 @@ class G2GDecoder(nn.Module):
             c_d = th.cat([c_dT, c_dG], 1)[to_continue]  # Eq. (5) (7)
             z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
             p = z_d @ self.u_d + self.b_d3  # Eq. (6)
-            expand = 1 - eids % 2
-            topology_ce += F.cross_entropy(p, expand)
-            topology_count += (th.argmax(p, dim=1) == expand).sum().float()
+            expand = (1 - eids % 2).unsqueeze(1).float()
+            print("this is stop loss logit shape ", p.size())
+            #topology_ce += F.cross_entropy(p, expand)
+            topology_ce += self.stop_loss(p, expand)
+            stops = th.ge(p, 0).float()
+            stops = th.eq(stops, expand).float()
+            topology_count += th.sum(stops)
+            #topology_ce += F.BCEWithLogitsLoss(p, expand)
+            #topology_count += (th.argmax(p, dim=1) == expand).sum().float()
 
             # label prediction
             msg = T_lg.nodes[eids].data['msg']
