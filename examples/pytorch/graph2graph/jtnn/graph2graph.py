@@ -282,9 +282,9 @@ class Graph2Graph(nn.Module):
         X_bnn = th.tensor(X.batch_num_nodes, device=device)
         Y_bnn = th.FloatTensor(Y.batch_num_nodes).unsqueeze(1).to(device)
         # NOTICE: gaiyu->hq: implementation changed to Y - X
-        delta = dgl.sum_nodes(Y, 'x') - dgl.sum_nodes(X, 'x') # Eq. (11)
+        delta = dgl.sum_nodes(X, 'x') - dgl.sum_nodes(Y, 'x') # Eq. (11)
         # Normalized by the size of y
-        delta /= Y_bnn
+        # delta /= Y_bnn
 
         mu = mean_gen(delta)
         logvar = -th.abs(var_gen(delta)) # Mueller et al.
