@@ -307,23 +307,23 @@ class Graph2Graph(nn.Module):
 
         self.encoder(X_G, X_T)
         print("#### THIS IS X_G embedding")
-        print("min", th.min(X_G.ndata['x']))
-        print("max", th.max(X_G.ndata['x']))
-        print("sum", th.sum(X_G.ndata['x']))
+        print("min {}, max {}, sum {}\
+              ".format(th.min(X_G.ndata['x']).item(),th.max(X_G.ndata['x']).item(),
+                      th.sum(X_G.ndata['x']).item()))
         print('###### This is X_T embedding')
-        print("min", th.min(X_T.ndata['x']))
-        print("max", th.max(X_T.ndata['x']))
-        print("sum", th.sum(X_T.ndata['x']))
+        print("min {}, max {}, sum {}\
+              ".format(th.min(X_T.ndata['x']).item(),th.max(X_T.ndata['x']).item(),
+                      th.sum(X_T.ndata['x']).item()))
         print('########')
         self.encoder(Y_G, Y_T)
         print("#### THIS IS Y_G embedding")
-        print("min", th.min(Y_G.ndata['x']))
-        print("max", th.max(Y_G.ndata['x']))
-        print("sum", th.sum(Y_G.ndata['x']))
+        print("min {}, max {}, sum {}\
+              ".format(th.min(Y_G.ndata['x']).item(),th.max(Y_G.ndata['x']).item(),
+                      th.sum(Y_G.ndata['x']).item()))
         print('###### This is Y_T embedding')
-        print("min", th.min(Y_T.ndata['x']))
-        print("max", th.max(Y_T.ndata['x']))
-        print("sum", th.sum(Y_T.ndata['x']))
+        print("min {}, max {}, sum {}\
+              ".format(th.min(Y_T.ndata['x']).item(),th.max(Y_T.ndata['x']).item(),
+                      th.sum(Y_T.ndata['x']).item()))
         print('########')
 
         X_G_embedding = X_G.ndata['x']

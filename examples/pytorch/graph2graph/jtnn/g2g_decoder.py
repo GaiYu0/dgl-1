@@ -251,7 +251,7 @@ class G2GDecoder(nn.Module):
         self.u_l = nn.Parameter(1e-3 * th.rand(*d_ul))
         self.b_l2 = nn.Parameter(th.zeros(1, d_ul[1]))
 
-        self.stop_loss = nn.BCEWithLogitsLoss(size_average=False)
+        self.expand_loss = nn.BCEWithLogitsLoss(size_average=False)
 
     def forward(self, X_G, X_T, Y_G, Y_T):
         """
@@ -306,10 +306,10 @@ class G2GDecoder(nn.Module):
             expand = (1 - eids % 2).unsqueeze(1).float()
             #print("this is stop loss logit shape ", p.size())
             #topology_ce += F.cross_entropy(p, expand)
-            topology_ce += self.stop_loss(p, expand)
-            stops = th.ge(p, 0).float()
-            stops = th.eq(stops, expand).float()
-            topology_count += th.sum(stops)
+            topology_ce += self.expand_loss(p, expand)
+            hard_expand = th.ge(p, 0).float()
+            correct = th.eq(hard_expand, expand).float()
+            topology_count += th.sum(correct)
             #topology_ce += F.BCEWithLogitsLoss(p, expand)
             #topology_count += (th.argmax(p, dim=1) == expand).sum().float()
 
