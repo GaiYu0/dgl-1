@@ -284,7 +284,7 @@ class Graph2Graph(nn.Module):
         # NOTICE: gaiyu->hq: implementation changed to Y - X
         delta = dgl.sum_nodes(Y, 'x') - dgl.sum_nodes(X, 'x') # Eq. (11)
         # Normalized by the size of y
-        delta /= Y_bnn
+        # delta /= Y_bnn
 
         mu = mean_gen(delta)
         logvar = -th.abs(var_gen(delta)) # Mueller et al.
