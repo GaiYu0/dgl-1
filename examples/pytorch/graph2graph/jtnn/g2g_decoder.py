@@ -304,7 +304,6 @@ class G2GDecoder(nn.Module):
             z_d = th.relu(h @ self.w_d3 + c_d @ self.w_d4 + self.b_d2)
             p = z_d @ self.u_d + self.b_d3  # Eq. (6)
             expand = (1 - eids % 2).unsqueeze(1).float()
-            #print("this is stop loss logit shape ", p.size())
             #topology_ce += F.cross_entropy(p, expand)
             topology_ce += self.expand_loss(p, expand)
             hard_expand = th.ge(p, 0).float()
