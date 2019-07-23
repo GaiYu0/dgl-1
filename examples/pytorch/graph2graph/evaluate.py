@@ -95,7 +95,7 @@ with open(cur_dir + "/exp_temp/" + args.experiment + "_temp.txt", 'w') as file:
         for i in range(args.num_decode):
              
             # disable the line below to test autoencoder for the time being
-            tree_vec, mol_vec = model.sample_with_noise(tree_vec, mol_vec)
+            #tree_vec, mol_vec = model.sample_with_noise(tree_vec, mol_vec)
             #mol_vec, _, _ = model.sample_from_diff(X_G, Y_G, model.mu_G, model.logvar_G,
             #                                    model.w1, model.w2, model.b1)
             #tree_vec, _, _ = model.sample_from_diff(X_T, Y_T, model.mu_T, model.logvar_T,
@@ -103,5 +103,7 @@ with open(cur_dir + "/exp_temp/" + args.experiment + "_temp.txt", 'w') as file:
             smiles = model.decode(tree_vec, mol_vec)
             print(smiles)
             file.write(gt_smiles + "," + smiles + "\n")
-            if it > 7:
+            if it > 1:
+                continue
+            if i > 10:
                 raise NotImplementedError

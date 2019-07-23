@@ -149,7 +149,7 @@ def train():
             #print("#### This is model embedding")
             #print(model.embeddings)
             print("########")
-            loss = topology_ce + label_ce + 0.01 * assm_loss + 0.01 * kl_div
+            loss = topology_ce + label_ce + assm_loss + 0.1 * kl_div
             print('epoch %d | iteration %d | topology %.3f | label %.3f | assml %.3f | kl %.3f | %.3f' % (epoch, it, topology_ce.item(), label_ce.item(), assm_loss.item(), kl_div.item(), loss.item()))
             print("accuracy: topology %.3f | label %.3f | assm %.3f"%(topo_acc, label_acc, assm_acc))
             print("++++++++++++++++++++++++++++++++++++++\n")

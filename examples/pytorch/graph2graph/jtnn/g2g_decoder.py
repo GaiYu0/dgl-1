@@ -180,7 +180,8 @@ class Attention(nn.Module):
         bnn = th.tensor(G.batch_num_nodes, device=device)
         G.ndata['s'] = th.sum(G.ndata['x'] * th.repeat_interleave(h @ self.a, bnn, 0), 1)
         #numerical stability
-        G.ndata['exp'] = th.exp(G.ndata['s'] - th.repeat_interleave(dgl.max_nodes(G, 's'), bnn))
+        G.ndata['exp'] = th.exp(G.ndata['s'])
+        # G.ndata['exp'] = th.exp(G.ndata['s'] - th.repeat_interleave(dgl.max_nodes(G, 's'), bnn))
         z = th.repeat_interleave(dgl.sum_nodes(G, 'exp'), bnn)
         a = th.unsqueeze(G.ndata['exp'] / z, 1)  # Eq. (25)
         G.ndata['a_times_x'] = a * G.ndata['x']
@@ -253,6 +254,17 @@ class G2GDecoder(nn.Module):
 
         self.expand_loss = nn.BCEWithLogitsLoss(size_average=False)
 
+    def tensor_att(self, h, x, att_mat):
+        num_node = x.size()[0]
+        s = th.sum(x * th.repeat_interleave(h @ att_mat, num_node, 0), 1)
+        # numerical stability
+        exp = th.exp(s - th.max(s))
+        z = th.sum(exp)
+        a = th.unsqueeze(exp / z, 1) # Eq. (25)
+        a_times_x = a * x
+        ret = th.sum(a_times_x, dim=0)
+        return ret
+
     def forward(self, X_G, X_T, Y_G, Y_T):
         """
         Parameters
@@ -309,7 +321,6 @@ class G2GDecoder(nn.Module):
             hard_expand = th.ge(p, 0).float()
             correct = th.eq(hard_expand, expand).float()
             topology_count += th.sum(correct)
-            #topology_ce += F.BCEWithLogitsLoss(p, expand)
             #topology_count += (th.argmax(p, dim=1) == expand).sum().float()
 
             # label prediction
@@ -636,11 +647,6 @@ class G2GDecoder(nn.Module):
         gen_T.update_all(readout_msg_fn, readout_reduce_fn, readout_apply_fn)
 
         return Y_T.nodes[0].data['r']
-
-
-
-
-
     
     def decode(self, x_T, x_G):
         """
@@ -660,13 +666,23 @@ class G2GDecoder(nn.Module):
 
         print("###############START DECODING A MOLECULE#####################")
         device = x_G.device
-
+  
         # during decoding, decoder only attends to the first tree/mol node embedding
         #\TODO This is not True!!!!!! It actually attends to the first graph.
-        d_context = th.cat([th.unsqueeze(x_T[0,:],0), th.unsqueeze(x_G[0,:],0)], 1) # Eq. (8)
+        # d_context = th.cat([th.unsqueeze(x_T[0,:],0), th.unsqueeze(x_G[0,:],0)], 1) # Eq. (8)
+        
+        # new d_context vector:
+        init_hiddens = th.zeros(1, self.d_msgT).to(device)
+        c_lT = self.tensor_att(init_hiddens, x_T, self.att_lT.a).unsqueeze(0)
+        c_lG = self.tensor_att(init_hiddens, x_G, self.att_lG.a).unsqueeze(0)
+        d_context = th.cat([c_lT, c_lG], 1)
+        
+        
         # init_h (message vector) is a zero vector
-        z_l = th.relu(d_context @ self.w_l2 + self.b_l1)
+        z_l = th.relu(init_hiddens @ self.w_l1 + d_context @ self.w_l2 + self.b_l1)
         q = z_l @ self.u_l + self.b_l2  # Eq. (9)
+        print(" below is q max, min, sum ")
+        print(th.max(q).item(), th.min(q).item(), th.sum(q).item())
 
         root_score = F.softmax(q, dim=1)
         _, root_wid = th.max(root_score, dim=1)
